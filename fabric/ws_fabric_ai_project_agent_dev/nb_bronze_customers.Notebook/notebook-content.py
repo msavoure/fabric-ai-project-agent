@@ -29,7 +29,8 @@
 # | Item | Value | Repository source |
 # |---|---|---|
 # | Notebook | `nb_bronze_customers` | STANDARD `naming.notebooks.ingestion` |
-# | Target table | `bronze_customers` | STANDARD `naming.tables.bronze` + CONTRACT `target.bronze_table` |
+# | Target table | `customers.bronze_customers` | STANDARD `naming.tables.bronze` + CONTRACT `target.bronze_table`, qualified by the `customers` schema per DECISION B-06 |
+# | Lakehouse | `lkh_bronze` (schema-enabled) in workspace `ws_fabric_ai_project_agent_dev` | DECISION B-06 |
 # | Source | `Files/customers.csv` | DECISION B-02 |
 # | Format | Delta | STANDARD `bronze.storage_format` |
 # | Load mode | Full refresh / overwrite | DECISION HV-05 |
@@ -55,6 +56,7 @@
 # | B-03 | Data Quality reporting is notebook output only - no persistent DQ table |
 # | B-04 | Abort before write on DQ-01 only; all other controls report, keep, continue |
 # | B-05 | `_ingestion_timestamp` in UTC, one value per batch |
+# | B-06 | Schema-qualified target `customers.bronze_customers` in the schema-enabled Lakehouse `lkh_bronze` |
 # | HV-05 | `full_snapshot` / `full_refresh` / no historization |
 # 
 # > **Execution is not authorised by the generation request.** Running this notebook
@@ -91,7 +93,11 @@ from pyspark.sql.types import (
 SOURCE_PATH = "Files/customers.csv"
 
 # STANDARD naming.tables.bronze + CONTRACT target.bronze_table
-TARGET_TABLE = "bronze_customers"
+# DECISION B-06 - the attached Lakehouse lkh_bronze is schema-enabled and the
+# human Data Engineer selected the existing schema "customers" as the target
+# schema. The table name itself is unchanged: the schema is a physical
+# placement qualifier, it does not alter the contract-declared table name.
+TARGET_TABLE = "customers.bronze_customers"
 
 # Technical column used by the PERMISSIVE reader to capture unparseable rows.
 # It is reported, then dropped before the write: STANDARD bronze.technical_columns
@@ -279,7 +285,7 @@ logger.info("=" * 78)
 # 2. supplying an explicit schema binds values **positionally** - a silent column
 #    reorder would map the wrong values onto the right names and pass unnoticed.
 # 
-# **DECISION B-04.** On failure: report, then abort **before** writing `bronze_customers`.
+# **DECISION B-04.** On failure: report, then abort **before** writing `customers.bronze_customers`.
 # Aborting before the write destroys nothing and leaves the previous table content intact.
 
 # CELL ********************
@@ -804,7 +810,7 @@ record_dq(
 
 # MARKDOWN ********************
 
-# ## 8. Write to `bronze_customers`
+# ## 8. Write to `customers.bronze_customers`
 # 
 # | Parameter | Value | Source |
 # |---|---|---|
