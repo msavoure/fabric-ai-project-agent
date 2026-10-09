@@ -1,0 +1,4 @@
+# Placeholder.
+# Reserved for Microsoft Fabric Git integration - workspace ws_fabric_ai_project_agent_dev,
+# branch dev. Fabric writes the serialised item folders here. Do not create
+# item folders or .platform files by hand.
