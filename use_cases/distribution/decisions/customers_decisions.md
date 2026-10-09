@@ -2,7 +2,7 @@
 
 **Use case:** Distribution / Customers
 **Scope:** MVP
-**Last updated:** 2026-10-07
+**Last updated:** 2026-10-09
 
 This file records the decisions taken by the human Data Engineer during
 the Customers analysis, and the residual open points.
@@ -39,11 +39,16 @@ Priority order defined in `agent/system_prompt.md` remains:
 | B-04 | 2026-10-07 | Abort before write on DQ-01 failure only | This file - see below | APPROVED |
 | B-05 | 2026-10-07 | `_ingestion_timestamp` in UTC, one value per batch | This file - see below | APPROVED |
 | B-06 | 2026-10-09 | Schema-enabled Lakehouse `lkh_bronze`, target schema `customers` -> `customers.bronze_customers` | This file - see below | APPROVED |
+| B-07 | 2026-10-09 | `fabric/.../notebook-content.py` becomes the single source of truth for executable notebook code; `generated/nb_bronze_customers.ipynb` is frozen as a superseded design artifact | This file - see below | APPROVED - architecture_change |
 
 The `B-xx` series records **Bronze implementation decisions** for
 `nb_bronze_customers`. They are implementation-level choices: they do not
 create, alter or override any business rule, and they are scoped to the
 Customers MVP unless explicitly promoted later.
+
+B-07 is the single exception: it is an **architecture decision** about where
+notebook code lives, not a Bronze implementation choice, and it applies to
+every notebook in the repository.
 
 ---
 
@@ -355,13 +360,64 @@ architecture_change`) and it was given by the human Data Engineer.
 
 ---
 
+## B-07 - Fabric-native notebook as the single source of truth
+
+**Date:** 2026-10-09
+**Type:** Architecture decision - STANDARD `human_approval_required:
+architecture_change`
+**Scope:** Repository-wide, all notebooks
+
+**Context.** The development workspace `ws_fabric_ai_project_agent_dev` is
+connected to branch `dev` and to the directory
+`fabric/ws_fabric_ai_project_agent_dev/`. Microsoft Fabric committed its two
+items on 2026-10-09. The notebook had been imported into the workspace from a
+revision predating B-06, so the Fabric-serialised copy targeted
+`bronze_customers` instead of `customers.bronze_customers`.
+
+Two copies of the same executable logic therefore existed: the authoring
+notebook `generated/nb_bronze_customers.ipynb` and the Fabric payload
+`fabric/ws_fabric_ai_project_agent_dev/nb_bronze_customers.Notebook/notebook-content.py`.
+
+**Decision.** The human Data Engineer designated
+`fabric/**/notebook-content.py` as the **single source of truth for
+executable notebook code**. This reverses the one-way flow previously
+documented in `README.md` section 6 and in `fabric/README.md`.
+
+**Consequences.**
+
+- Notebook code is edited in `fabric/**/notebook-content.py`, pushed to
+  `dev`, then applied to the workspace with *Update from Git*. That
+  operation overwrites the workspace item and remains a
+  `modify_fabric_item` approval trigger; pushing to `dev` does not
+  authorise it.
+- `generated/nb_bronze_customers.ipynb` is **frozen as a superseded design
+  artifact**. It is kept unchanged for traceability, it is not regenerated,
+  and it must not be imported into a workspace. At the date of this
+  decision it is cell-for-cell identical to the corrected Fabric payload.
+- Fabric-owned metadata - `.platform`, `alm.settings.json`,
+  `*.metadata.json`, item folder names, logical identifiers, `# META`
+  blocks, cell separators - stays owned by Microsoft Fabric and must never
+  be hand-edited. B-07 opens the notebook payload to editing, nothing else.
+- `generated/customers_data_quality.md` is **not** affected: it is a
+  specification, not executable code, and `generated/` remains the output
+  directory for agent-authored documentation.
+- **No business decision is altered.** B-06 remains the authority for the
+  target table; B-07 only changes where the code implementing it lives.
+  The Data Contract, the business rules and the project standards are
+  unchanged.
+- A change made directly in the Fabric UI arrives through a Fabric commit
+  and is reconciled in `fabric/`, never by a textual merge of the two
+  notebook representations.
+
+---
+
 ## Remaining unresolved decisions
 
 | ID | Subject | Blocking for |
 |---|---|---|
 | - | None | - |
 
-HV-01 to HV-06, R-01 to R-03 and B-01 to B-06 are all resolved. No
+HV-01 to HV-06, R-01 to R-03 and B-01 to B-07 are all resolved. No
 decision remains open for the Customers use case, and **no decision blocks
 the generation of `nb_bronze_customers`**.
 
@@ -382,4 +438,6 @@ Deferred, non-blocking items carried forward:
 |---|---|---|
 | `generated/customers_data_quality.md` | Regenerate - DQ-03, DQ-06, DQ-11, DQ-16, DQ-17, DQ-19, DQ-24 are impacted | REGENERATED |
 | `nb_bronze_customers` | Generate PySpark implementation | GENERATED - `generated/nb_bronze_customers.ipynb`, B-01 to B-06 applied, execution in Fabric not authorised |
+| `nb_bronze_customers` (Fabric item) | Align the Fabric-serialised payload with B-06 - it was imported from a pre-B-06 revision | CORRECTED on `dev` - `fabric/ws_fabric_ai_project_agent_dev/nb_bronze_customers.Notebook/notebook-content.py`, cell-for-cell parity verified, *Update from Git* not yet run, execution in Fabric not authorised |
+| `generated/nb_bronze_customers.ipynb` | Freeze as superseded design artifact | FROZEN - decision B-07, kept unchanged, no longer the deployment path |
 | `nb_silver_customers` | Generate PySpark implementation | NOT AUTHORISED YET - Silver implementation not yet designed |
