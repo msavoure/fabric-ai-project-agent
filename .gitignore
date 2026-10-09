@@ -1,0 +1,78 @@
+# =============================================================================
+# fabric-ai-project-agent - exclusion policy
+# =============================================================================
+# This repository is a governed Microsoft Fabric data engineering repository.
+# Nothing machine-local, nothing secret and nothing regenerable may be
+# committed. Source data is versioned ONLY when it is explicitly approved as
+# synthetic (see README.md, "Data policy").
+# =============================================================================
+
+# --- Editor and IDE ----------------------------------------------------------
+.vscode/
+.idea/
+*.code-workspace
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# --- Notebooks ---------------------------------------------------------------
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# --- Secrets, credentials and local configuration ----------------------------
+# NEVER commit a credential. Microsoft Fabric / Entra ID access must rely on
+# interactive sign-in or a managed identity, never on a file in this repository.
+.env
+.env.*
+!.env.example
+*.secret
+*.secrets
+secrets.json
+credentials.json
+local.settings.json
+.azure/
+.fabric-credentials
+*.pem
+*.key
+*.pfx
+*.p12
+*.publishsettings
+.netrc
+
+# --- Logs and temporary files ------------------------------------------------
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# --- Spark / local execution artifacts ---------------------------------------
+spark-warehouse/
+metastore_db/
+derby.log
+.checkpoint/
+_delta_log/
+
+# --- OS ----------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini

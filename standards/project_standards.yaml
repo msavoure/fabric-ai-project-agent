@@ -1,0 +1,118 @@
+standard_version: "0.2"
+
+project:
+  platform: microsoft_fabric
+  architecture: medallion
+
+architecture:
+  layers:
+    bronze:
+      purpose: raw_ingestion
+      preserve_source_data: true
+      transformations_allowed: false
+
+    silver:
+      purpose: cleaned_and_conformed
+      transformations_allowed: true
+
+    gold:
+      purpose: business_data_product
+      transformations_allowed: true
+
+naming:
+  tables:
+    bronze: "bronze_{entity}"
+    silver: "silver_{entity}"
+
+  notebooks:
+    ingestion: "nb_bronze_{entity}"
+    transformation: "nb_silver_{entity}"
+
+bronze:
+  storage_format: delta
+  preserve_source_schema: true
+
+  technical_columns:
+    - name: "_source_file"
+      type: string
+
+    - name: "_ingestion_timestamp"
+      type: timestamp
+
+    - name: "_batch_id"
+      type: string
+
+silver:
+  storage_format: delta
+
+  allowed_operations:
+    - cast
+    - trim
+    - normalize
+    - deduplicate
+    - derive
+    - validate
+
+  business_rules_required: true
+
+  undocumented_business_rule:
+    action: request_human_validation
+
+data_quality:
+  generate_from_data_contract: true
+  generate_from_business_rules: true
+
+  mandatory_checks:
+    - schema_conformity
+    - primary_key_null
+    - primary_key_uniqueness
+
+  on_failure:
+    action: report
+    record_handling: keep_in_target
+    quarantine: false
+    reject: false
+
+ai_agent:
+  allowed_actions:
+    - inspect_source
+    - profile_source
+    - detect_anomalies
+    - compare_source_to_contract
+    - propose_transformations
+    - generate_code
+    - generate_data_quality_checks
+    - generate_documentation
+
+  human_approval_required:
+    - undocumented_business_rule
+    - ambiguous_transformation
+    - architecture_change
+    - modify_fabric_item
+    - create_fabric_item
+    - delete_fabric_item
+    - deploy
+
+  forbidden_actions:
+    - invent_business_rule
+    - change_data_contract
+    - change_project_standard
+    - delete_data
+    - deploy_without_approval
+
+code_generation:
+  preferred_language: pyspark
+  comments_required: true
+
+  generated_code_must_include:
+    - logging
+    - error_handling
+    - data_quality_checks
+
+human_in_the_loop:
+  enabled: true
+
+  approval_options:
+    - approve
+    - modify
+    - reject

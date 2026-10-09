@@ -1,0 +1,614 @@
+# Customers - Data Quality Specification
+
+**Dataset:** `customers` (Distribution data product)
+**Target tables:** `bronze_customers`, `silver_customers`
+**Status:** specification only - no implementation code generated.
+**Regenerated:** 2026-10-07, after resolution of HV-01 to HV-06.
+
+---
+
+## Baseline used for this generation
+
+| Source | Version / state | Role |
+|---|---|---|
+| `standards/project_standards.yaml` | `standard_version: "0.2"` | STANDARD - mandatory checks, failure routing |
+| `use_cases/distribution/contracts/customers.yaml` | `contract_version: "0.1"` | CONTRACT - schema, nullability, allowed values, business key |
+| `use_cases/distribution/business_rules/customers.md` | BR-CUSTOMER-001 to **BR-CUSTOMER-008** | BUSINESS RULE |
+| `use_cases/distribution/decisions/customers_decisions.md` | HV-01 to HV-06, R-01 to R-03 | DECISION |
+| `use_cases/distribution/data/customers.csv` | 509 physical lines | OBSERVATION - measured counts |
+
+STANDARD - `data_quality.generate_from_data_contract: true`
+STANDARD - `data_quality.generate_from_business_rules: true`
+STANDARD - `data_quality.mandatory_checks`: `schema_conformity`, `primary_key_null`, `primary_key_uniqueness`
+
+No business rule was invented. No source file was modified. No ambiguous value was silently corrected.
+
+---
+
+## Conventions
+
+### Severity scale
+
+| Severity | Meaning |
+|---|---|
+| **BLOCKING** | Violation prevents `silver_customers` from satisfying the Data Contract. |
+| **HIGH** | Explicit contract or mandatory standard violation, or a business rule violation that is **not** deterministically correctable. |
+| **MEDIUM** | Explicit business rule violation, deterministically correctable by a documented and authorised transformation. |
+| **LOW** | Contract-conform situation, monitored for drift only. |
+| **INFORMATIONAL** | Expected and authorised situation, counted for monitoring purposes. |
+
+### Failure routing - now fully defined
+
+STANDARD `data_quality.on_failure`:
+
+```yaml
+action: report
+record_handling: keep_in_target
+quarantine: false
+reject: false
+```
+
+Consequences applying to **every** control in this catalogue:
+
+- a failing record is **written to the target table** and **reported**;
+- no quarantine table is produced;
+- no record is rejected, excluded or deleted;
+- the only row-count reduction permitted between Bronze and Silver is the deduplication explicitly authorised by BR-CUSTOMER-001 (DQ-03).
+
+This closes the former HV-04 dependency, which applied to DQ-06, DQ-11 and DQ-24.
+
+### Load strategy - Customers use case only
+
+DECISION HV-05 / R-03, recorded in `use_cases/distribution/decisions/customers_decisions.md`:
+
+| Parameter | Value |
+|---|---|
+| `source_semantics` | `full_snapshot` |
+| `load_mode` | `full_refresh` |
+| `incremental_load` | `false` |
+| `historization` | `none` |
+
+Consequences for the controls: `bronze_customers` and `silver_customers` are fully rebuilt at each run, carry exactly one batch, and carry no history. This is the basis of DQ-22, DQ-24 and DQ-25.
+
+### Execution layer
+
+| Layer | DQ behavior |
+|---|---|
+| Bronze | Controls are **evaluated and reported** only. No row is filtered, no value is corrected. STANDARD `bronze.transformations_allowed: false`. |
+| Silver | Controls are evaluated **after** the transformations authorised by the business rules. Several controls act as post-conditions on those transformations. |
+
+---
+
+## Control catalogue
+
+---
+
+### DQ-01 - Schema conformity
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-01 |
+| **Column(s)** | All 8 columns |
+| **Rule** | The ingested dataset must expose exactly the 8 columns declared in the contract, with the exact declared names: `customer_id`, `customer_name`, `customer_type`, `city`, `postal_code`, `region`, `country`, `created_date`. No missing column, no extra column. |
+| **Source of the rule** | STANDARD `data_quality.mandatory_checks.schema_conformity` + CONTRACT `schema` |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report the missing and/or unexpected column names. The pipeline must not auto-align the schema, and must not alter the Data Contract. A schema divergence invalidates all downstream controls and must be escalated to a human. |
+| **Evaluation layer** | Bronze (at read) |
+| **Profiling result** | PASS - 8/8 columns conform. |
+
+---
+
+### DQ-02 - `customer_id` not null
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-02 |
+| **Column(s)** | `customer_id` |
+| **Rule** | `customer_id` must be non-null and non-empty on every record. |
+| **Source of the rule** | STANDARD `data_quality.mandatory_checks.primary_key_null` + CONTRACT `customer_id.nullable: false` + CONTRACT `quality.business_key.nullable: false` |
+| **Severity** | BLOCKING |
+| **Expected behavior on failure** | Report the count and the physical position of the offending rows. A null business key cannot be deduplicated nor joined; no default or surrogate value may be generated by the agent. |
+| **Evaluation layer** | Bronze and Silver |
+| **Profiling result** | PASS - 0 null values over 508 rows. |
+
+---
+
+### DQ-03 - `customer_id` uniqueness and survivorship
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-03 |
+| **Column(s)** | `customer_id` |
+| **Rule** | `customer_id` must be unique in `silver_customers`. Duplicates detected in Bronze must be resolved by the survivorship rule of BR-CUSTOMER-001, evaluated **after** the trim of BR-CUSTOMER-002. |
+| **Source of the rule** | STANDARD `data_quality.mandatory_checks.primary_key_uniqueness` + CONTRACT `quality.business_key.unique: true` + BUSINESS RULE BR-CUSTOMER-001 + DECISION HV-01, R-02 |
+| **Severity** | BLOCKING |
+| **Expected behavior on failure** | Report every duplicated `customer_id` and its number of occurrences. Then apply BR-CUSTOMER-001: **(a)** if all records sharing the key are strictly identical on the 7 business attributes (`customer_name`, `customer_type`, `city`, `postal_code`, `region`, `country`, `created_date`), keep one record and **report the removal**; **(b)** if at least one business value conflicts, keep all records and escalate - see DQ-26. Technical columns are excluded from the comparison. Two missing values are considered identical (DECISION R-02). |
+| **Evaluation layer** | Bronze (detection, raw) and Silver (post-condition, post-trim) |
+| **Profiling result** | **Bronze: FAIL by design** - 8 duplicated keys, 16 rows: `C0078`, `C0110`, `C0180`, `C0211`, `C0322`, `C0370`, `C0384`, `C0471`. Verified: the 8 keys are **strictly identical after trim** on all 7 business attributes, 0 conflicting key. Branch (a) applies to all 8. **8 rows removed and reported.** **Silver: expected PASS** - 500 unique keys. |
+| **Dependency** | None. HV-01 and R-02 are resolved. |
+
+---
+
+### DQ-04 - `customer_name` not null
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-04 |
+| **Column(s)** | `customer_name` |
+| **Rule** | `customer_name` must be non-null. |
+| **Source of the rule** | CONTRACT `customer_name.nullable: false` |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report the offending `customer_id` values. No name may be invented or derived. |
+| **Evaluation layer** | Bronze and Silver |
+| **Profiling result** | PASS - 0 null values. |
+
+---
+
+### DQ-05 - `customer_name` free of leading/trailing whitespace
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-05 |
+| **Column(s)** | `customer_name` |
+| **Rule** | After the Silver transformation, `customer_name` must contain no leading or trailing space. |
+| **Source of the rule** | BUSINESS RULE BR-CUSTOMER-002 |
+| **Severity** | MEDIUM |
+| **Expected behavior on failure** | Evaluated on Bronze raw values: report the number of affected rows as an incoming-quality indicator. Evaluated on Silver post-trim values: any remaining occurrence indicates a transformation defect and must be reported as a pipeline error. The trim itself is authorised and deterministic (STANDARD `silver.allowed_operations.trim`). |
+| **Evaluation layer** | Bronze (indicator) and Silver (post-condition) |
+| **Profiling result** | **Bronze: FAIL - 18 rows** (recount, see "Corrections" below). 10 rows with leading **and** trailing spaces: `C0069`, `C0071`, `C0154`, `C0196`, `C0329`, `C0386`, `C0397`, `C0417`, `C0448`, `C0452`. 8 rows with trailing space only: the 8 duplicate rows of DQ-03. **Silver: expected PASS.** |
+
+---
+
+### DQ-06 - `customer_type` allowed values
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-06 |
+| **Column(s)** | `customer_type` |
+| **Rule** | `customer_type` must contain one of the following values: `B2B`, `B2C`. Any other value must be reported as a Data Quality issue. |
+| **Source of the rule** | BUSINESS RULE BR-CUSTOMER-006 + CONTRACT `customer_type.allowed_values` |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report the offending `customer_id` values and the observed value. **The record is written to `silver_customers` and reported** (STANDARD `record_handling: keep_in_target`, `quarantine: false`, `reject: false`). No mapping, no defaulting, no inference of the customer type is permitted. |
+| **Evaluation layer** | Silver (after the trim of BR-CUSTOMER-002) |
+| **Profiling result** | PASS - 2 distinct values only (`B2B`, `B2C`), 0 out-of-domain values over 508 rows. |
+| **Dependency** | None. Routing defined by the standards - former HV-04 closed. |
+
+---
+
+### DQ-07 - `customer_type` not null
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-07 |
+| **Column(s)** | `customer_type` |
+| **Rule** | `customer_type` must be non-null. |
+| **Source of the rule** | CONTRACT `customer_type.nullable: false` |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report the offending `customer_id` values. No default type may be assigned. |
+| **Evaluation layer** | Bronze and Silver |
+| **Profiling result** | PASS - 0 null values. |
+
+---
+
+### DQ-08 - `country` not null
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-08 |
+| **Column(s)** | `country` |
+| **Rule** | `country` must be non-null. |
+| **Source of the rule** | CONTRACT `country.nullable: false` |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report the offending `customer_id` values. No country may be inferred from `postal_code`, `city` or `region`. |
+| **Evaluation layer** | Bronze and Silver |
+| **Profiling result** | PASS - 0 null values. |
+
+---
+
+### DQ-09 - `country` normalization
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-09 |
+| **Column(s)** | `country` |
+| **Rule** | The values `FR` and `France` designate the same country. The standard Silver value is `France`. After transformation, no `FR` occurrence may remain. |
+| **Source of the rule** | BUSINESS RULE BR-CUSTOMER-003 |
+| **Severity** | MEDIUM |
+| **Expected behavior on failure** | Evaluated on Bronze: report the number of `FR` occurrences as an incoming-quality indicator. Evaluated on Silver: any remaining `FR` indicates a transformation defect and must be reported as a pipeline error. The `FR` to `France` normalization is explicitly authorised (STANDARD `silver.allowed_operations.normalize`). |
+| **Evaluation layer** | Bronze (indicator) and Silver (post-condition) |
+| **Profiling result** | **FAIL on Bronze** - 10 rows: `C0005`, `C0036`, `C0074`, `C0085`, `C0226`, `C0272`, `C0289`, `C0313`, `C0333`, `C0347`. Expected PASS on Silver. |
+
+---
+
+### DQ-10 - `country` value domain
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-10 |
+| **Column(s)** | `country` |
+| **Rule** | Detect and report any `country` value other than `France` or `FR` after trim. |
+| **Source of the rule** | OBSERVATION (drift monitoring). The CONTRACT declares **no** `allowed_values` for `country` - gap G-02, accepted and deferred by DECISION HV-06. BR-CUSTOMER-003 covers the `FR` / `France` pair only. |
+| **Severity** | LOW |
+| **Expected behavior on failure** | Report the unknown value and its row count. **No normalization may be applied to an unknown value** - doing so would amount to inventing a business rule (STANDARD `forbidden_actions.invent_business_rule`). A new value requires a business decision. |
+| **Evaluation layer** | Silver |
+| **Profiling result** | PASS - only `France` (498 rows) and `FR` (10 rows) observed. |
+| **Dependency** | None blocking. Contract gap G-02 **accepted and deferred** by DECISION HV-06; this control is the compensating measure. |
+
+---
+
+### DQ-11 - `created_date` convertibility
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-11 |
+| **Column(s)** | `created_date` |
+| **Rule** | `created_date` must be convertible to a valid date using the format `yyyy-MM-dd`. If the value cannot be converted, the record must be reported as a Data Quality issue. |
+| **Source of the rule** | BUSINESS RULE BR-CUSTOMER-007 + CONTRACT `created_date.type: date`, `format: "yyyy-MM-dd"` |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report the offending `customer_id` values and the raw unconverted string. **The record is written to `silver_customers` with a NULL `created_date` and reported** (STANDARD `record_handling: keep_in_target`). BR-CUSTOMER-007 forbids inventing any correction. The cast must never produce a silent NULL without an associated report entry. |
+| **Evaluation layer** | Silver (cast step) |
+| **Profiling result** | PASS - 508/508 values conform to `yyyy-MM-dd`, observed range `2022-01-08` to `2026-02-09`. |
+| **Dependency** | None. Routing defined by the standards - former HV-04 closed. |
+
+> **Interaction with DQ-12.** A record failing DQ-11 produces a NULL `created_date`, which then violates CONTRACT `created_date.nullable: false` and is reported a second time by DQ-12. This is expected: the standards forbid rejecting the record, so the contract violation is carried and reported, not suppressed.
+
+---
+
+### DQ-12 - `created_date` not null
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-12 |
+| **Column(s)** | `created_date` |
+| **Rule** | `created_date` must be non-null. |
+| **Source of the rule** | CONTRACT `created_date.nullable: false` |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report the offending `customer_id` values. No creation date may be substituted, defaulted or derived from the ingestion timestamp. |
+| **Evaluation layer** | Bronze and Silver |
+| **Profiling result** | PASS - 0 null values. |
+
+---
+
+### DQ-13 - `postal_code` not null
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-13 |
+| **Column(s)** | `postal_code` |
+| **Rule** | `postal_code` must be non-null. |
+| **Source of the rule** | CONTRACT `postal_code.nullable: false` |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report the offending `customer_id` values. No postal code may be inferred from `city`. |
+| **Evaluation layer** | Bronze and Silver |
+| **Profiling result** | PASS - 0 null values. |
+
+---
+
+### DQ-14 - `postal_code` typing integrity
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-14 |
+| **Column(s)** | `postal_code` |
+| **Rule** | `postal_code` must be carried as a `string` end to end. Values with a leading zero must retain that leading zero (example: `06000` must not become `6000`). |
+| **Source of the rule** | CONTRACT `postal_code.type: string` + STANDARD `bronze.preserve_source_schema: true` |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report any value whose length differs from the source value, or any non-string typing of the column. A failure here indicates that schema inference was applied at read time instead of the contract-declared schema - this is a pipeline configuration defect, not a source data defect. |
+| **Evaluation layer** | Bronze (at read) and Silver |
+| **Profiling result** | PASS at source - leading zeros present and intact (`06000`, `29200`). Risk carried by the reader configuration, not by the data. |
+
+---
+
+### DQ-15 - `region` missing values
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-15 |
+| **Column(s)** | `region` |
+| **Rule** | Missing `region` values must remain NULL. No value may be invented, imputed or derived. |
+| **Source of the rule** | BUSINESS RULE BR-CUSTOMER-004 + CONTRACT `region.nullable: true` |
+| **Severity** | INFORMATIONAL |
+| **Expected behavior on failure** | This is a **counting and monitoring** control, not a rejection control: the contract authorises NULL. Report the number of NULL `region` values per batch. A failure state is only raised if a NULL is found to have been **replaced** by a value - which would constitute a violation of BR-CUSTOMER-004. |
+| **Evaluation layer** | Silver (post-condition) |
+| **Profiling result** | 8 rows with NULL `region` - expected and authorised: `C0037`, `C0046`, `C0068`, `C0118`, `C0197`, `C0217`, `C0245`, `C0356`. None of the 8 is a duplicate key, so the count is **unchanged at 8 in Silver**. |
+
+---
+
+### DQ-16 - `region` value `Rhone Alpes` - preservation and escalation
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-16 |
+| **Column(s)** | `region` |
+| **Rule** | Every occurrence of `Rhone Alpes` must be **preserved unchanged**, reported as a Data Quality issue, and submitted to human validation. The `Rhone Alpes` to `Auvergne-Rhône-Alpes` normalization documented by BR-CUSTOMER-004 **must not be applied automatically**. |
+| **Source of the rule** | BUSINESS RULE BR-CUSTOMER-004 (Application section) + DECISION HV-02 / R-01 |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report the `customer_id`, the source `region` value and the associated `city` and `postal_code`, and raise a human-validation request for the batch. **The record is written to `silver_customers` with its source `region` value intact** (STANDARD `record_handling: keep_in_target`). The correct region must never be derived from `city` or `postal_code`. No geographic validation must be performed and no geographic reference dataset must be introduced. |
+| **Evaluation layer** | Bronze (detection) and Silver (post-condition: the value must still be `Rhone Alpes`) |
+| **Profiling result** | **5 rows reported, 5 rows preserved.** None is a duplicate key, so the count is **unchanged at 5 in Silver**. |
+| **Dependency** | None at specification level. HV-02 and R-01 are resolved. **A human validation is required at each run** - see "Run-time human validation". |
+
+Rows reported:
+
+| customer_id | city | postal_code | region (source, preserved) |
+|---|---|---|---|
+| C0053 | Vannes | 56000 | Rhone Alpes |
+| C0161 | Vannes | 56000 | Rhone Alpes |
+| C0189 | Bordeaux | 33000 | Rhone Alpes |
+| C0375 | Lille | 59000 | Rhone Alpes |
+| C0413 | Angers | 49000 | Rhone Alpes |
+
+> **Severity rationale.** MEDIUM is reserved for business rule violations that are deterministically correctable by an authorised transformation. BR-CUSTOMER-004 explicitly forbids the correction, so this condition is not correctable by the pipeline and is classified HIGH.
+
+> **Post-condition inversion.** In the previous version of this specification, a Silver row carrying `Rhone Alpes` was a transformation defect. **This is now inverted**: a Silver row carrying `Auvergne-Rhône-Alpes` where the source carried `Rhone Alpes` is the defect, and must be reported as an unauthorised transformation.
+
+---
+
+### DQ-17 - WITHDRAWN
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-17 |
+| **Former subject** | `region` / `city` / `postal_code` geographic consistency |
+| **Status** | **WITHDRAWN** by DECISION HV-02 / R-01, 2026-10-07 |
+| **Reason** | The decision states: *"Do not attempt geographic validation and do not introduce a geographic reference dataset."* The control therefore has no rule source and must not be evaluated. Implementing it would require inventing a business rule (STANDARD `forbidden_actions.invent_business_rule`). |
+| **Replaced by** | DQ-16, which reports and escalates the 5 affected rows without arbitrating their geography. |
+
+The identifier DQ-17 is retired and must not be reused.
+
+---
+
+### DQ-18 - `city` missing values
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-18 |
+| **Column(s)** | `city` |
+| **Rule** | Missing `city` values must remain NULL. No value must be invented to replace a missing city. |
+| **Source of the rule** | BUSINESS RULE BR-CUSTOMER-005 + CONTRACT `city.nullable: true` |
+| **Severity** | INFORMATIONAL |
+| **Expected behavior on failure** | Counting and monitoring control: the contract authorises NULL. Report the number of NULL `city` values per batch. A failure state is only raised if a NULL is found to have been **replaced** by a value - which would constitute a violation of BR-CUSTOMER-005. |
+| **Evaluation layer** | Silver (post-condition) |
+| **Profiling result** | 8 rows with NULL `city` - expected and authorised: `C0005`, `C0062`, `C0176`, `C0228`, `C0349`, `C0357`, `C0419`, `C0441`. None is a duplicate key, so the count is **unchanged at 8 in Silver**. |
+
+---
+
+### DQ-19 - `city` casing consistency
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-19 |
+| **Column(s)** | `city` |
+| **Rule** | The casing of `city` must not be normalized automatically. Casing inconsistencies - several distinct representations of the same city - must be reported as a Data Quality issue. No `city` value may be modified beyond the trim of BR-CUSTOMER-002. |
+| **Source of the rule** | **BUSINESS RULE BR-CUSTOMER-008** + DECISION HV-03 |
+| **Severity** | MEDIUM |
+| **Expected behavior on failure** | **Detection and reporting only.** Report the rows whose `city` differs from the dominant representation of the same city, with the observed variants. **The record is written to `silver_customers` with its source casing intact.** Applying a casing normalization is an unauthorised transformation and must itself be reported as a pipeline defect. |
+| **Evaluation layer** | Silver (reporting only) |
+| **Profiling result** | **Bronze: 13 occurrences in full uppercase** - `BORDEAUX` (C0001), `CLERMONT-FERRAND` (C0040), `LYON` (C0047, C0116), `VANNES` (C0049), `NICE` (C0068, C0110 x2), `ANGERS` (C0245), `TOULOUSE` (C0266), `PARIS` (C0304), `AMIENS` (C0336), `LIMOGES` (C0361). **Silver: 12 occurrences** - one `C0110` row is removed by the DQ-03 deduplication. |
+| **Dependency** | None. HV-03 is resolved and persisted as BR-CUSTOMER-008. |
+
+> **Change of nature.** This control was previously sourced from OBSERVATION only, with no rule behind it. It is now a **business rule post-condition**: BR-CUSTOMER-008 positively mandates both the absence of normalization and the reporting.
+
+---
+
+### DQ-20 - Text normalization scope
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-20 |
+| **Column(s)** | `customer_name`, `customer_type`, `city`, `region`, `country` |
+| **Rule** | After the Silver transformation, none of the five columns listed by BR-CUSTOMER-002 may carry a leading or trailing space. |
+| **Source of the rule** | BUSINESS RULE BR-CUSTOMER-002 |
+| **Severity** | MEDIUM |
+| **Expected behavior on failure** | Post-condition control on the Silver trim. Report per column the number of residual values carrying whitespace. A failure indicates a transformation defect, not a source defect. |
+| **Evaluation layer** | Silver (post-condition) |
+| **Profiling result** | Whitespace observed on `customer_name` only - 18 rows, see DQ-05. Verified 0 whitespace on `customer_type`, `city`, `region`, `country`. **Silver: expected PASS on all five columns.** |
+
+> **Ordering constraint.** The BR-CUSTOMER-002 trim must execute **before** the DQ-03 survivorship evaluation. Without it, the 8 duplicate pairs differ by a trailing space in `customer_name` and would be classified as conflicting under branch (b), blocking the deduplication.
+
+---
+
+### DQ-21 - Columns outside the trim scope
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-21 |
+| **Column(s)** | `customer_id`, `postal_code` |
+| **Rule** | Detect and report the presence of leading or trailing whitespace on `customer_id` and `postal_code`. |
+| **Source of the rule** | OBSERVATION (drift monitoring). These two columns are **absent from the BR-CUSTOMER-002 trim list** - gap accepted and deferred by DECISION HV-06. |
+| **Severity** | LOW |
+| **Expected behavior on failure** | **Reporting only - no trim may be applied.** BR-CUSTOMER-002 lists the columns in scope exhaustively; extending the trim would be an undocumented transformation. Whitespace on `customer_id` would additionally corrupt the DQ-03 key comparison and the survivorship evaluation. |
+| **Evaluation layer** | Bronze and Silver |
+| **Profiling result** | PASS - verified 0 whitespace on both columns. |
+| **Dependency** | None blocking. Trim-scope gap **accepted and deferred** by DECISION HV-06; this control is the compensating measure. |
+
+---
+
+### DQ-22 - Bronze / source row count reconciliation
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-22 |
+| **Column(s)** | All rows (technical control) |
+| **Rule** | After a full refresh, the number of rows in `bronze_customers` must equal the number of data rows read from the source file, header excluded. No row added, no row filtered, no row carried over from a previous run. |
+| **Source of the rule** | STANDARD `architecture.layers.bronze.preserve_source_data: true` + DECISION HV-05 (`load_mode: full_refresh`) |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report the source count, the written count and the delta, keyed by `_batch_id`. A discrepancy means Bronze did not preserve the source data, or that the full refresh did not replace the previous content, and invalidates every downstream control. |
+| **Evaluation layer** | Bronze |
+| **Profiling result** | **Expected: 508 rows** - 509 physical lines minus the header. The 16 duplicate-key rows and the 18 whitespace rows are **all** written to Bronze: no correction is permitted at this layer. |
+
+---
+
+### DQ-23 - Bronze technical columns present
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-23 |
+| **Column(s)** | `_source_file`, `_ingestion_timestamp`, `_batch_id` |
+| **Rule** | `bronze_customers` must carry the three technical columns declared by the standards, populated and non-null on every row, with the declared types (`string`, `timestamp`, `string`). |
+| **Source of the rule** | STANDARD `bronze.technical_columns` |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report the missing or unpopulated technical columns. Without `_batch_id`, no Data Quality report can be attributed to a batch and DQ-22 becomes unverifiable. |
+| **Evaluation layer** | Bronze |
+| **Profiling result** | Not applicable - columns produced at ingestion, not present in the source. |
+
+---
+
+### DQ-24 - Silver / Bronze row count reconciliation
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-24 |
+| **Column(s)** | All rows (technical control) |
+| **Rule** | `count(silver_customers)` must equal `count(bronze_customers)` minus the rows removed by the DQ-03 deduplication. Any other row loss is unexplained and forbidden. |
+| **Source of the rule** | STANDARD `silver.allowed_operations.deduplicate` + STANDARD `forbidden_actions.delete_data` + STANDARD `data_quality.on_failure.record_handling: keep_in_target` + BUSINESS RULE BR-CUSTOMER-001 |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report any unexplained delta with the reconciliation detail: Bronze count, rows removed by survivorship branch (a), rows retained by branch (b), Silver count. Because the standards route **every** DQ failure to `keep_in_target`, **deduplication is the only authorised cause of row loss**. |
+| **Evaluation layer** | Silver |
+| **Profiling result** | **Expected delta: -8 rows. Bronze 508 to Silver 500.** 8 duplicated keys, branch (a) on all 8, one record removed per key. 500 equals the number of distinct `customer_id` values, verified. |
+| **Dependency** | None. HV-01 and HV-04 are resolved. |
+
+---
+
+### DQ-25 - Full refresh integrity
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-25 |
+| **Column(s)** | `_batch_id` (technical control) |
+| **Rule** | After a load, `bronze_customers` and `silver_customers` must each contain exactly **one** distinct `_batch_id`. No row from a previous run may survive, and no historized version of a customer may be present. |
+| **Source of the rule** | DECISION HV-05 - `source_semantics: full_snapshot`, `load_mode: full_refresh`, `incremental_load: false`, `historization: none` |
+| **Severity** | HIGH |
+| **Expected behavior on failure** | Report the distinct `_batch_id` values found and their row counts. More than one batch means the full refresh degraded into an append, which would silently inflate the tables and invalidate DQ-03, DQ-22 and DQ-24. Report only - the control itself deletes no row (STANDARD `forbidden_actions.delete_data`). |
+| **Evaluation layer** | Bronze and Silver |
+| **Profiling result** | Not applicable - evaluated at run time. Expected: 1 distinct `_batch_id`, 508 rows in Bronze, 500 rows in Silver. |
+
+> **Scope.** This control is specific to the Customers use case. It is **not** a platform-wide rule: `standards/project_standards.yaml` deliberately declares no global load strategy (DECISION R-03).
+
+---
+
+### DQ-26 - Duplicate survivorship conflict
+
+| Field | Value |
+|---|---|
+| **Control ID** | DQ-26 |
+| **Column(s)** | `customer_id` + the 7 business attributes |
+| **Rule** | When records sharing the same `customer_id` differ on at least one business attribute after trim, **no survivor may be selected automatically**. All conflicting records must be kept, reported, and submitted to human validation. |
+| **Source of the rule** | BUSINESS RULE BR-CUSTOMER-001, branch (b) + DECISION HV-01 |
+| **Severity** | BLOCKING |
+| **Expected behavior on failure** | Report the `customer_id`, every conflicting record, and the attributes that differ. **All records are kept in `silver_customers`**, which consequently violates CONTRACT `quality.business_key.unique: true` - that violation is reported by DQ-03 and must not be resolved by the agent. Raise a human-validation request. The agent must never decide which record survives when a conflict exists. |
+| **Evaluation layer** | Silver (after trim, during survivorship evaluation) |
+| **Profiling result** | **PASS on the current file - 0 conflicting key.** Verified: the 8 duplicated keys are strictly identical on all 7 business attributes after trim. Branch (b) is not triggered by this batch. |
+| **Dependency** | None at specification level. A human validation is required at run time if this control ever fires. |
+
+---
+
+## Summary table
+
+| ID | Column(s) | Source | Severity | Expected result |
+|---|---|---|---|---|
+| DQ-01 | all | STANDARD + CONTRACT | HIGH | PASS |
+| DQ-02 | `customer_id` | STANDARD + CONTRACT | BLOCKING | PASS |
+| DQ-03 | `customer_id` | STANDARD + CONTRACT + BR-001 + HV-01 | BLOCKING | Bronze: 8 keys / 16 rows reported - Silver: **PASS, 500 unique** |
+| DQ-04 | `customer_name` | CONTRACT | HIGH | PASS |
+| DQ-05 | `customer_name` | BR-002 | MEDIUM | Bronze: **18 rows** - Silver: PASS |
+| DQ-06 | `customer_type` | BR-006 + CONTRACT | HIGH | PASS |
+| DQ-07 | `customer_type` | CONTRACT | HIGH | PASS |
+| DQ-08 | `country` | CONTRACT | HIGH | PASS |
+| DQ-09 | `country` | BR-003 | MEDIUM | Bronze: 10 rows - Silver: PASS |
+| DQ-10 | `country` | OBSERVATION + HV-06 | LOW | PASS |
+| DQ-11 | `created_date` | BR-007 + CONTRACT | HIGH | PASS - 508/508 |
+| DQ-12 | `created_date` | CONTRACT | HIGH | PASS |
+| DQ-13 | `postal_code` | CONTRACT | HIGH | PASS |
+| DQ-14 | `postal_code` | CONTRACT + STANDARD | HIGH | PASS (reader risk) |
+| DQ-15 | `region` | BR-004 + CONTRACT | INFORMATIONAL | 8 NULL - authorised |
+| DQ-16 | `region` | BR-004 + HV-02 / R-01 | HIGH | **5 rows preserved and reported** |
+| DQ-17 | - | - | - | **WITHDRAWN** |
+| DQ-18 | `city` | BR-005 + CONTRACT | INFORMATIONAL | 8 NULL - authorised |
+| DQ-19 | `city` | **BR-008** + HV-03 | MEDIUM | 13 Bronze / **12 Silver** - reported |
+| DQ-20 | 5 BR-002 columns | BR-002 | MEDIUM | Silver: PASS |
+| DQ-21 | `customer_id`, `postal_code` | OBSERVATION + HV-06 | LOW | PASS |
+| DQ-22 | all | STANDARD + HV-05 | HIGH | **508 rows** |
+| DQ-23 | technical columns | STANDARD | HIGH | N/A - run time |
+| DQ-24 | all | STANDARD + BR-001 | HIGH | **508 to 500, delta -8** |
+| DQ-25 | `_batch_id` | **HV-05** | HIGH | 1 distinct batch |
+| DQ-26 | `customer_id` + 7 attributes | **BR-001 branch (b)** | BLOCKING | **PASS - 0 conflict** |
+
+---
+
+## Row count reconciliation
+
+| Stage | Count | Justification |
+|---|---|---|
+| Source file - physical lines | 509 | 1 header + 508 data rows |
+| Source file - data rows | **508** | DQ-22 reference |
+| `bronze_customers` | **508** | STANDARD `preserve_source_data: true` - no filtering, no correction. Duplicates and whitespace preserved. |
+| Rows removed by survivorship branch (a) | **-8** | BR-CUSTOMER-001 - 8 duplicated keys, all strictly identical after trim, one record kept per key |
+| Rows retained by survivorship branch (b) | **0** | DQ-26 - no conflicting key in this batch |
+| Rows removed by a DQ failure | **0** | STANDARD `record_handling: keep_in_target`, `quarantine: false`, `reject: false` |
+| `silver_customers` | **500** | Equals the number of distinct `customer_id` values, verified |
+
+**Contract satisfaction.** With 500 unique keys and 0 nulls, `silver_customers` satisfies CONTRACT `quality.business_key` (`unique: true`, `nullable: false`). This was **not** achievable under the previous specification, where DQ-03 was in permanent FAIL.
+
+---
+
+## Human decision status
+
+### Resolved - no longer a specification blocker
+
+| Decision | Resolution | Controls released |
+|---|---|---|
+| **HV-01** | Conditional survivorship - BR-CUSTOMER-001 | DQ-03, DQ-24, new DQ-26 |
+| **HV-02 / R-01** | No automatic `Rhone Alpes` normalization, preserve and report | DQ-16; **DQ-17 withdrawn** |
+| **HV-03** | City casing reported, never normalized - BR-CUSTOMER-008 | DQ-19 |
+| **HV-04** | `on_failure.record_handling: keep_in_target`, applied in `standard_version: "0.2"` | DQ-06, DQ-11, DQ-24 and every contract control |
+| **HV-05 / R-03** | Full snapshot, full refresh, no historization - Customers scope only | DQ-22, DQ-24, new DQ-25 |
+| **HV-06** | Data Contract frozen, gaps accepted and reported | DQ-10, DQ-21 reclassified from blocked to compensating |
+| **R-02** | Two missing values are identical in the duplicate comparison | DQ-03 |
+
+**No control in this catalogue is blocked by an unresolved human decision.**
+
+### Run-time human validation - standing, by design
+
+Not specification gaps: escalations mandated by the approved rules, expected to recur at each run.
+
+| Control | Trigger | Expected volume on the current file |
+|---|---|---|
+| DQ-16 | Every `Rhone Alpes` occurrence must be submitted to human validation (BR-CUSTOMER-004) | 5 records per run |
+| DQ-26 | Any duplicated `customer_id` with conflicting business values | 0 records - fires only on a future batch |
+
+### Deferred, tracked, non-blocking
+
+Contract gaps accepted by HV-06, each covered by a compensating control.
+
+| Gap | Subject | Compensating control |
+|---|---|---|
+| G-02 | `country` has no `allowed_values` | DQ-10 |
+| G-03 | `region` has no reference list | DQ-16 (report only, no arbitration) |
+| G-04 | `postal_code` has no pattern | DQ-14 (typing only) |
+| G-05 | `created_date` has no validity window | **Not controlled** - no rule source |
+| - | Trim scope excludes `customer_id` and `postal_code` | DQ-21 |
+
+---
+
+## Corrections applied to the previous version
+
+| Item | Previous version | This version | Nature |
+|---|---|---|---|
+| DQ-05 / DQ-20 whitespace count | 16 rows | **18 rows** | **Counting error corrected.** The previous text announced 16 while listing 10 identifiers for the leading+trailing group. Recount: 10 rows leading **and** trailing, plus 8 rows trailing only, equals 18. |
+| DQ-19 Silver count | not stated | 12 occurrences | Consequence of the DQ-03 deduplication on the duplicated `C0110` row. |
+
+**OBSERVATION - stale entry in the decision log.** `use_cases/distribution/decisions/customers_decisions.md` records HV-04 as *"PENDING HUMAN APPLICATION"*. `standards/project_standards.yaml` is now at `standard_version: "0.2"` and carries the `on_failure` block, so the change **has been applied**. This specification is generated against the standards file, which is the priority-1 source of truth. The decision log entry should be updated to RESOLVED by a human - the agent did not modify it.
+
+---
+
+## Constraints respected
+
+- No business rule invented.
+- No ambiguous data silently corrected.
+- Data Contract not modified.
+- Project standards not modified.
+- Business rules not modified.
+- Decision log not modified.
+- No data deleted - the 8 rows removed by DQ-03 are removed under BR-CUSTOMER-001 and reported.
+- No PySpark code generated.

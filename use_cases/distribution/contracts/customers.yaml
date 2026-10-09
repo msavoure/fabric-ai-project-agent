@@ -1,0 +1,67 @@
+contract_version: "0.1"
+
+dataset:
+  name: customers
+  description: Customer master data used by the Distribution data product
+
+source:
+  type: csv
+  file: customers.csv
+
+target:
+  bronze_table: bronze_customers
+  silver_table: silver_customers
+
+schema:
+
+  - name: customer_id
+    type: string
+    nullable: false
+    business_key: true
+    description: Unique customer identifier
+
+  - name: customer_name
+    type: string
+    nullable: false
+    description: Customer name
+
+  - name: customer_type
+    type: string
+    nullable: false
+    allowed_values:
+      - B2B
+      - B2C
+    description: Customer type
+
+  - name: city
+    type: string
+    nullable: true
+    description: Customer city
+
+  - name: postal_code
+    type: string
+    nullable: false
+    description: Customer postal code
+
+  - name: region
+    type: string
+    nullable: true
+    description: Customer region
+
+  - name: country
+    type: string
+    nullable: false
+    description: Customer country
+
+  - name: created_date
+    type: date
+    nullable: false
+    format: "yyyy-MM-dd"
+    description: Customer creation date
+
+quality:
+  business_key:
+    columns:
+      - customer_id
+    unique: true
+    nullable: false
