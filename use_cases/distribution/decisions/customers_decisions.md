@@ -42,17 +42,21 @@ Priority order defined in `agent/system_prompt.md` remains:
 | B-06 | 2026-10-09 | Schema-enabled Lakehouse `lkh_bronze`, target schema `customers` -> `customers.bronze_customers` | This file - see below | APPROVED |
 | B-07 | 2026-10-09 | `fabric/.../notebook-content.py` becomes the single source of truth for executable notebook code; `generated/nb_bronze_customers.ipynb` is frozen as a superseded design artifact | This file - see below | APPROVED - architecture_change |
 | B-08 | 2026-10-12 | Dedicated schema-enabled Lakehouse `lkh_silver`, target schema `customers` -> `customers.silver_customers` | This file - see below | APPROVED - architecture_change, placement only |
+| B-09 | 2026-10-12 | Silver technical columns, abort preconditions, Data Quality failure behaviour and target-Lakehouse identity guard | This file - see below | APPROVED - Silver implementation decision |
 
-The `B-xx` series records **Bronze implementation decisions** for
+The `B-01` to `B-06` series records **Bronze implementation decisions** for
 `nb_bronze_customers`. They are implementation-level choices: they do not
 create, alter or override any business rule, and they are scoped to the
 Customers MVP unless explicitly promoted later.
 
-B-07 and B-08 are the exceptions. Both are **architecture decisions**
-approved under STANDARD `human_approval_required: architecture_change`.
-B-07 governs where notebook code lives and applies to every notebook in the
-repository. B-08 governs where the Silver table lives and is scoped to the
-Customers MVP. Neither is a Bronze implementation choice.
+B-07 and B-08 are **architecture decisions**, approved under STANDARD
+`human_approval_required: architecture_change`. B-07 governs where notebook
+code lives and applies to every notebook in the repository. B-08 governs
+where the Silver table lives and is scoped to the Customers MVP.
+
+B-09 is the first **Silver implementation decision**. Like the Bronze series
+it creates no business rule and is scoped to the Customers MVP. It is **not**
+a transposition of B-04, which remains scoped to the Bronze layer.
 
 HV-07 is the first **run-time** entry in this register. HV-01 to HV-06 are
 design-time decisions that create or clarify a rule; HV-07 creates none. It
@@ -561,12 +565,225 @@ These open points are carried in the `S-xx` series below.
 
 ---
 
+## B-09 - Silver implementation: technical columns, preconditions and Data Quality behaviour
+
+**Date:** 2026-10-12
+**Type:** Implementation decision - Silver layer
+**Scope:** `nb_silver_customers` -> `customers.silver_customers`, Customers MVP
+
+**Context.** B-08 settled **where** the Silver table lives. It deliberately
+settled nothing about what the notebook carries, when it refuses to write, or
+how it reacts to a Data Quality finding. B-04 answered those questions for
+Bronze and was **explicitly scoped to the Bronze layer**; it is **not**
+transposed here. B-09 answers them for Silver on its own authority.
+
+### What is approved
+
+**1. Technical columns.** `silver_customers` carries the three Bronze
+technical columns - `_batch_id`, `_ingestion_timestamp`, `_source_file` -
+**propagated unchanged from `bronze_customers`, never regenerated**.
+
+- `_batch_id` is **mandatory**: DQ-25 declares its evaluation layer as
+  "Bronze and Silver" and requires exactly one distinct value in
+  `silver_customers`.
+- `_ingestion_timestamp` is retained as the cross-run chronological key
+  (B-05), the UUID of B-01 carrying no chronology.
+- `_source_file` is retained for lineage (B-02).
+- **No new technical column is created.** A column that no business rule and
+  no Data Quality control requires would be an undocumented rule (STANDARD
+  `silver.undocumented_business_rule`,
+  `forbidden_actions.invent_business_rule`).
+
+**2a. Abort preconditions - evaluated BEFORE the write.** The run aborts and
+`customers.silver_customers` is **left untouched** when any of the following
+holds:
+
+| # | Precondition | Checked |
+|---|---|---|
+| 1 | The Bronze source is unreadable or cannot be resolved | Before read |
+| 2 | The Bronze source is **empty** | Before transformation |
+| 3 | `_batch_id` is **null** on any Bronze source row | Before transformation |
+| 4 | The Bronze source holds a number of distinct `_batch_id` **other than exactly 1** | Before transformation |
+| 5 | The Bronze source does **not expose the 11 required columns** (decision 2c) | Before transformation |
+| 6 | The **target Lakehouse identity** does not match the expected one | Immediately before the write |
+
+All six are evaluated **before any write is attempted**. Aborting at this
+stage writes nothing, deletes nothing and leaves the previous content of the
+target intact. This guarantee is **structural**: the write statement is never
+reached.
+
+**2b. Technical failure DURING or AFTER the write.** A failure raised by the
+write itself, or by any step following it, is **logged and propagated**. The
+run stops.
+
+**No claim is made that the target is unchanged.** Unlike 2a, the write
+statement has been reached, and the notebook **cannot assert** the resulting
+state of `customers.silver_customers`.
+
+Consequently:
+
+- the notebook must **not** log any message asserting that the target is
+  intact after a failure of this class;
+- the state of `customers.silver_customers` is **undetermined** and must be
+  **verified by a human** before any re-run;
+- the Data Quality report of that execution **may be incomplete, depending on
+  where the failure occurred**. The post-write controls DQ-24 and DQ-25 may
+  have run, partially run, or not run at all. The notebook must not assert
+  which. The absence of a `control_id` from the output means **not
+  evaluated** - neither PASS nor FAIL.
+
+This distinction is deliberate. 2a offers a guarantee; 2b offers only
+traceability.
+
+**2c. Required Bronze source columns.** `customers.bronze_customers` must
+expose **at least these 11 columns**, verified by **name and presence**:
+
+| Group | Columns | Authority |
+|---|---|---|
+| Contract columns (8) | `customer_id`, `customer_name`, `customer_type`, `city`, `postal_code`, `region`, `country`, `created_date` | CONTRACT `schema` - exact names |
+| Technical columns (3) | `_source_file`, `_ingestion_timestamp`, `_batch_id` | STANDARD `bronze.technical_columns` |
+
+- **Column order is irrelevant.** Silver addresses columns by name.
+- **A missing column aborts the run** - precondition 2a-5.
+- **An extra column does not block the read.** It is **not propagated** to
+  `silver_customers`: Silver projects the 8 contract columns plus the 3
+  technical columns of decision 1, and nothing else. An unexpected column is
+  ignored, never silently persisted.
+- Propagating an undeclared column would extend the Silver structure without
+  any authority. **The Data Contract and the business rules are unchanged.**
+- **Column types are deliberately NOT verified.** STANDARD
+  `bronze.preserve_source_schema: true` means Bronze carries the source
+  representation, and the `created_date` conversion is a **Silver** operation
+  (BR-CUSTOMER-007, DQ-11, STANDARD `silver.allowed_operations: cast`).
+  Asserting a Bronze type would invent a type contract that no authority
+  states.
+- This precondition is **not** DQ-01 under another name. DQ-01 checks the 8
+  contract columns of the **source file at Bronze read**. 2c checks the
+  columns of the **Bronze table read by Silver**. It carries no `control_id`
+  and is not added to the Data Quality catalogue (decision 6).
+
+**3. Data Quality findings on business data.** Every Data Quality control
+evaluating the business content reports, **keeps the affected records**, and
+**lets the run continue**. No correction, no rejection, no quarantine, no
+deletion. This follows directly from STANDARD `data_quality.on_failure` -
+`action: report`, `record_handling: keep_in_target`, `quarantine: false`,
+`reject: false` - which is **not scoped by layer** - and from HV-04. A
+`BLOCKING` severity qualifies the gravity of the finding, never the fate of
+the run.
+
+**4. DQ-26 - survivorship conflict.** When records sharing a `customer_id`
+differ on at least one business attribute **after trim**, the notebook:
+
+1. **keeps every conflicting record** - none is removed, corrected or
+   quarantined;
+2. **reports** the `customer_id`, the conflicting records and the differing
+   attributes;
+3. **raises a human validation request** (STANDARD `human_in_the_loop`,
+   BR-CUSTOMER-001 branch (b), HV-01);
+4. **continues execution**, provided preconditions 2a-1 to 2a-6 are
+   satisfied.
+
+The agent **never selects a survivor** when a conflict exists.
+
+**DQ-26 never aborts the run by itself, and never overrides a safety
+precondition.** The two mechanisms are independent and the preconditions
+prevail: if the target-Lakehouse identity guard 2a-6 fails, the run aborts
+regardless of the DQ-26 outcome.
+
+**Ordering.** DQ-26 is evaluated during survivorship, therefore **before** the
+identity guard and before the write. A DQ-26 finding is recorded, then the run
+proceeds to 2a-6 and to the write.
+
+**Expected side effects of a DQ-26 finding.** Duplicate keys remain in
+`silver_customers`, so CONTRACT `quality.business_key.unique: true` is
+breached - that breach is **reported by DQ-03** and **must not be resolved by
+the agent** - and DQ-24 reports a smaller row-count delta than the
+deduplication would otherwise have produced. Neither is a defect to correct.
+Both are the documented consequence of BR-CUSTOMER-001 branch (b).
+
+**Current state.** DQ-26 is **PASS** on the profiled file: the 8 duplicated
+keys are strictly identical on all 7 business attributes after trim. Branch
+(b) has never fired.
+
+**5. Target Lakehouse identity guard.** Immediately before the write, the
+notebook verifies the identity of the default Lakehouse through its **Fabric
+identifiers - Lakehouse identifier and workspace identifier**, not through its
+display name. A Lakehouse can be renamed while keeping its identifier, and a
+different Lakehouse may carry the same display name in another workspace; the
+name is therefore used for diagnostic messages only. **The expected
+identifiers are supplied by configuration and are not hardcoded in the
+business code.** On mismatch the run aborts before the write.
+
+**6. No extension of DQ-01 or DQ-23 to Silver in this MVP.** Preconditions 2a-2
+to 2a-6 are **technical preconditions**, not Data Quality controls. They carry
+no `control_id`, they are not added to the Data Quality catalogue, and
+`generated/customers_data_quality.md` is **not regenerated**.
+
+**7. `_batch_id` semantics.** In `silver_customers`, `_batch_id` identifies the
+**Bronze batch the data originates from**. It does **not** identify a Silver
+execution.
+
+### What is explicitly NOT settled by B-09
+
+| # | Open point | Status |
+|---|---|---|
+| 1 | The **configuration mechanism** supplying the expected Fabric identifiers | **Undetermined.** Carried as open point S-06 |
+| 2 | Verification of the **source** Lakehouse identity | **Undetermined**, depends on S-04 |
+| 3 | The read method, the notebook configuration and the creation of `lkh_silver` | Unchanged: open points S-01 to S-04 |
+| 4 | Any execution of `nb_silver_customers` | **Not authorised.** HV-07 covers preparation only |
+
+**Consequences.**
+
+- The Data Contract, the business rules and the project standards are
+  **unchanged**. B-09 creates no business rule and alters none.
+- The contract declares 8 columns and does not enumerate the Silver table's
+  columns. Bronze already carries 8 contract columns plus 3 technical columns
+  by STANDARD `bronze.technical_columns`; B-09 **extends an established
+  pattern** rather than creating one.
+- Technical columns are **excluded from survivorship comparison**
+  (BR-CUSTOMER-001, 7 business attributes). B-01, B-02 and B-05 make the three
+  values constant across a batch, so duplicate rows carry identical technical
+  values and **the choice of survivor is never affected** by this decision.
+- Preconditions 2a-2 to 2a-6 **appear in the notebook log, not in the Data
+  Quality result set** of B-03, since they carry no `control_id`. A run aborted
+  by a precondition therefore produces an incomplete DQ report by design.
+- Because `_batch_id` identifies the Bronze batch (decision 7), **two Silver
+  runs over the same Bronze batch are indistinguishable** from the table
+  content alone. This is accepted for the MVP; cross-run Silver audit is
+  deferred together with persistent Data Quality storage (B-03).
+- DQ-25 evaluated on `silver_customers` after the write remains **report
+  only**: it deletes no residual batch (STANDARD
+  `forbidden_actions.delete_data`).
+- Expected results for the Bronze batch validated by HV-07, should Silver ever
+  be executed on it: DQ-03 PASS with 500 unique keys, DQ-24 a -8 row delta from
+  508 to 500, DQ-25 one distinct `_batch_id`, DQ-26 PASS, DQ-16 FAIL on 5 rows
+  and DQ-19 reporting 12 rows - both by design.
+
+### Documentation inconsistency flagged, not corrected
+
+`B-03` bounds the `control_id` field of an emitted Data Quality result to
+`DQ-01 ... DQ-25`, while the Data Quality catalogue reaches **DQ-26**. The
+bound has no effect in Bronze, DQ-26 being a Silver control, but it becomes
+**factually wrong as soon as `nb_silver_customers` emits DQ-26**.
+
+This is a **pre-existing inconsistency**, older than B-08 and B-09. It is
+**deliberately not corrected here**: amending B-03 would modify an already
+approved decision and requires a separate human validation.
+
+A second, related gap: B-03 defines no notion of a **partial** Data Quality
+report, although B-09 creates two situations that produce one - an abort on a
+precondition, and a failure during or after the write. In both cases the
+absence of a `control_id` from the output means **not evaluated**, neither
+PASS nor FAIL. This tri-state is recorded here and is not documented in B-03.
+
+---
+
 ## Remaining unresolved decisions
 
-The `S-xx` series records **Silver open points** opened by B-08. None of them
-is approved, and none of them is a business decision. They fall into two
-distinct categories, and **neither category suspends the design and code
-authoring authorised by HV-07**.
+The `S-xx` series records **Silver open points**, opened by B-08 and B-09.
+None of them is approved, and none of them is a business decision. They fall
+into two distinct categories, and **neither category suspends the design and
+code authoring authorised by HV-07**.
 
 ### Category A - Fabric configuration and deployment prerequisites
 
@@ -587,14 +804,21 @@ These block only the code sections they name. The remainder of
 | ID | Subject | Blocks | Does not block |
 |---|---|---|---|
 | S-04 | Cross-Lakehouse read method, to be confirmed by test before being coded | The source read cell only | Every transformation and Data Quality cell |
-| S-05 | Silver technical columns, Silver abort policy, and the default-Lakehouse guard before write | The technical-column projection, the abort policy and the write cell | The transformation chain and the Data Quality controls |
+| S-06 | Configuration mechanism supplying the expected Fabric identifiers for the target-Lakehouse identity guard - B-09 decision 5 | The implementation of the identity guard only | The transformation chain, the Data Quality controls and the write logic itself |
+
+**Resolved in this category.** S-05 - Silver technical columns, abort policy
+and target-Lakehouse guard - is **resolved in principle by B-09**. B-09
+settles *what* the notebook carries, *when* it refuses to write, and *how* it
+reacts to a Data Quality finding. It leaves the **supply of the expected
+identifiers** undetermined, which is now carried as S-06.
 
 ### What is not blocked
 
 HV-07 remains in force: the **design and code authoring** of
-`nb_silver_customers` are authorised. Nothing in S-01 to S-05 suspends that
-authorisation. The following are fully determined by the Data Contract, the
-business rules and the Data Quality specification, and can be written now:
+`nb_silver_customers` are authorised. Nothing in S-01 to S-04 or S-06
+suspends that authorisation. The following are fully determined by the Data
+Contract, the business rules and the Data Quality specification, and can be
+written now:
 
 - the transformation chain and its mandatory ordering - trim
   (BR-CUSTOMER-002) before survivorship (BR-CUSTOMER-001), per DQ-20;
@@ -604,19 +828,30 @@ business rules and the Data Quality specification, and can be written now:
   HV-02, R-01), city casing preserved (BR-CUSTOMER-008, HV-03);
 - the Data Quality controls evaluated on the Silver layer.
 
+B-09 additionally determines, and therefore unblocks:
+
+- the projection of the three technical columns and the required Bronze
+  source columns;
+- the abort preconditions and the distinct handling of a failure during or
+  after the write;
+- the behaviour on a Data Quality finding, DQ-26 included.
+
 What remains unauthorised is the **execution** of `nb_silver_customers` in
 Fabric, which HV-07 explicitly excluded.
 
 ### Status roll-up
 
-HV-01 to HV-07, R-01 to R-03 and B-01 to B-08 are resolved. No **business**
+HV-01 to HV-07, R-01 to R-03 and B-01 to B-09 are resolved. No **business**
 decision remains open for the Customers use case. HV-07 is resolved for
 batch `c5082b63-22b4-4c95-ad41-78c8cfb86507` only: the next Bronze run will
 raise a new DQ-16 validation.
 
-B-08 settles **where** the Silver table lives. It does not authorise any
-Fabric item creation, any notebook configuration, any read method, or any
-execution.
+B-08 settles **where** the Silver table lives. B-09 settles **what it
+carries and when it refuses to write**. Neither authorises any Fabric item
+creation, any notebook configuration, any read method, or any execution.
+
+Silver open points still outstanding: **S-01, S-02, S-03, S-04 and S-06**.
+S-05 is resolved in principle by B-09.
 
 ### Deferred, non-blocking items carried forward
 
@@ -638,4 +873,5 @@ execution.
 | `nb_bronze_customers` (Fabric item) | Align the Fabric-serialised payload with B-06 - it was imported from a pre-B-06 revision | CORRECTED on `dev` - `fabric/ws_fabric_ai_project_agent_dev/nb_bronze_customers.Notebook/notebook-content.py`, cell-for-cell parity verified. **Executed 2026-10-12**, batch `c5082b63-22b4-4c95-ad41-78c8cfb86507`: 508 rows written to `customers.bronze_customers`, 500 distinct keys, 12 PASS / 4 FAIL by design. The revision deployed to the workspace at run time is **not verified** from this repository |
 | `generated/nb_bronze_customers.ipynb` | Freeze as superseded design artifact | FROZEN - decision B-07, kept unchanged, no longer the deployment path |
 | `lkh_silver` (Fabric item) | Create a schema-enabled Lakehouse and the schema `customers` inside it | NOT CREATED - placement approved by B-08; creation is open point S-01 / S-02, `create_fabric_item` **not granted** |
-| `nb_silver_customers` | Generate PySpark implementation | PREPARATION AUTHORISED - decision HV-07, design and code authoring only. Target placement settled by B-08; notebook configuration and cross-Lakehouse read remain open points S-03 / S-04. Execution in Fabric **not authorised** |
+| `nb_silver_customers` | Generate PySpark implementation | PREPARATION AUTHORISED - decision HV-07, design and code authoring only. Target placement settled by B-08; technical columns, abort preconditions, Data Quality behaviour and identity guard settled by B-09. Notebook configuration, cross-Lakehouse read and identifier supply remain open points S-03 / S-04 / S-06. Execution in Fabric **not authorised** |
+| `B-03` - `control_id` bound `DQ-01 ... DQ-25` | Decide whether to extend the bound to DQ-26 or make it unbounded | NOT CORRECTED - inconsistency flagged in B-09, amending an approved decision requires a separate human validation |
