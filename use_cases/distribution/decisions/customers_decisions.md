@@ -34,6 +34,7 @@ Priority order defined in `agent/system_prompt.md` remains:
 | R-01 | 2026-10-07 | All `Rhone Alpes` occurrences require human validation | BR-CUSTOMER-004 | RESOLVED |
 | R-02 | 2026-10-07 | Two NULL values are identical for duplicate comparison | BR-CUSTOMER-001 | RESOLVED |
 | R-03 | 2026-10-07 | `source_semantics` scoped to Customers, not global | This file | RESOLVED - MVP |
+| R-04 | 2026-10-12 | `lkh_silver` admitted as the resolution key of the target-Lakehouse identity guard; final comparison still made on Fabric identifiers | This file - see below | RESOLVED - amends B-09 decision 5, closes S-06, MVP DEV only |
 | B-01 | 2026-10-07 | `_batch_id` generated as a UUID once per notebook run | This file - see below | APPROVED |
 | B-02 | 2026-10-07 | Single source file `Files/customers.csv` in the attached Lakehouse | This file - see below | APPROVED - MVP |
 | B-03 | 2026-10-07 | Data Quality reporting is notebook-output only | This file - see below | APPROVED - MVP, persistence deferred |
@@ -723,13 +724,98 @@ no `control_id`, they are not added to the Data Quality catalogue, and
 **Bronze batch the data originates from**. It does **not** identify a Silver
 execution.
 
+### R-04 - Amendment to decision 5: name as resolution key
+
+**Date:** 2026-10-12
+**Type:** Amendment to an approved decision - limited scope
+**Amends:** B-09 decision 5 only. Decisions 1, 2a, 2b, 2c, 3, 4, 6 and 7 are
+unchanged.
+**Closes:** open point S-06
+
+#### Clause superseded
+
+Decision 5 reads:
+
+> the name is therefore used for diagnostic messages only
+
+Those words are **superseded for this guard only**. Everything else in
+decision 5 - verification through Fabric identifiers, expected identifiers not
+hardcoded in business code, abort before the write on mismatch - **stands
+unchanged**.
+
+#### What is now authorised
+
+The notebook may use the **governed display name `lkh_silver`** as a
+**resolution key** to obtain the expected Lakehouse identifier at run time.
+
+`lkh_silver` is not an arbitrary configuration value. It is fixed by STANDARD
+`naming`, by CONTRACT `target.silver_table` and by decision B-08. It is
+already written, in plain text, in this decision file.
+
+#### What remains mandatory
+
+1. The **final comparison is made on Fabric identifiers**, never on names. The
+   resolved identifier is compared to the identifier of the Lakehouse actually
+   attached, obtained from the notebook runtime context.
+2. The guard additionally asserts that the attached Lakehouse belongs to the
+   **workspace the notebook is executing in**.
+3. The display name is used for the resolution lookup and for diagnostic
+   messages. It is **never** accepted as proof of identity by itself.
+4. A **failed resolution** - `lkh_silver` absent, or insufficient permission -
+   is treated as a **mismatch** and aborts the run under precondition 2a-6. It
+   creates no new precondition and is never treated as a pass-through.
+5. **No GUID is hardcoded in the business code, and none is written into any
+   hand-authored configuration file.** GUIDs do appear in the
+   Fabric-generated `# META` block of `notebook-content.py`: they are written
+   by Microsoft Fabric, they are **authorised**, and they must **never be
+   hand-edited** (B-07). The guard does not read them.
+
+#### What this amendment explicitly is NOT
+
+**This is not an independent GUID validation.**
+
+The expected identifier is derived from the workspace itself at run time. It
+is **not** an external, independently supplied reference value. A workspace
+whose contents have been renamed or replaced will resolve a different item
+under the same governed name, and the guard will accept it.
+
+The guard therefore proves **"the attached Lakehouse is the one currently
+named `lkh_silver` in this workspace"**. It does **not** prove **"the attached
+Lakehouse is the Silver Lakehouse approved by B-08"**.
+
+#### Relationship to B-02
+
+B-02 forbids hardcoding a name **to address data**. R-04 uses a governed name
+**to verify a target**. The write path stays relative to the attached
+Lakehouse and is unchanged. **B-02 is not amended.**
+
+#### Relationship to B-07
+
+The guard reads the notebook **runtime context**. It never parses the `# META`
+block, which stays Fabric-owned and is never read as a configuration source,
+nor hand-edited.
+
+#### Dependency on S-03
+
+R-04 presupposes that `lkh_silver` is the default attached Lakehouse. If it is
+not attached, the guard aborts the run, which is the intended behaviour.
+
+#### Scope limit
+
+This amendment is scoped to the **target-Lakehouse identity guard** of
+`nb_silver_customers`, the **Customers MVP** and the **DEV workspace**. It is
+not a general project convention, it does not authorise name-based addressing
+anywhere else, and it does not modify B-02, B-07 or B-08.
+
+**Execution of `nb_silver_customers` remains not authorised.**
+
 ### What is explicitly NOT settled by B-09
 
 | # | Open point | Status |
 |---|---|---|
-| 1 | The **configuration mechanism** supplying the expected Fabric identifiers | **Undetermined.** Carried as open point S-06 |
+| 1 | The **configuration mechanism** supplying the expected Fabric identifiers | **Closed by R-04** - no configuration mechanism; run-time resolution of the governed name |
 | 2 | Verification of the **source** Lakehouse identity | **Undetermined**, depends on S-04 |
-| 3 | The read method, the notebook configuration and the creation of `lkh_silver` | Unchanged: open points S-01 to S-04 |
+| 3 | The cross-Lakehouse read method | Unchanged: open point S-04 |
 | 4 | Any execution of `nb_silver_customers` | **Not authorised.** HV-07 covers preparation only |
 
 **Consequences.**
@@ -787,14 +873,18 @@ code authoring authorised by HV-07**.
 
 ### Category A - Fabric configuration and deployment prerequisites
 
-Environment prerequisites. They block **deployment and execution**. They do
-**not** block design, code authoring or review.
+Environment prerequisites. **All three are now done**, carried out in Fabric
+by the human Data Engineer and synchronised to `dev` by Fabric Git
+integration at commit `d07266f`.
 
-| ID | Subject | Approval trigger | Blocking for |
+| ID | Subject | Approval trigger | Status |
 |---|---|---|---|
-| S-01 | Creation of Lakehouse `lkh_silver`, schema-enabled | `create_fabric_item` | Deployment and execution |
-| S-02 | Creation of schema `customers` inside `lkh_silver` | `create_fabric_item` | Deployment and execution |
-| S-03 | Attachment of `lkh_silver` as default and `lkh_bronze` as secondary Lakehouse - Fabric UI only, per B-07 | `modify_fabric_item` | Deployment and execution |
+| S-01 | Creation of Lakehouse `lkh_silver`, schema-enabled | `create_fabric_item` | **DONE** - `lkh_silver.Lakehouse/` serialised on `dev`; `lakehouse.metadata.json` reports `defaultSchema: dbo` |
+| S-02 | Creation of schema `customers` inside `lkh_silver` | `create_fabric_item` | **DONE** - **verified visually in the Fabric UI** by the human Data Engineer. A serialised Lakehouse carries no schema or table inventory, so this is **not verifiable from this repository** |
+| S-03 | Attachment of `lkh_silver` as default and `lkh_bronze` as secondary Lakehouse - Fabric UI only, per B-07 | `modify_fabric_item` | **DONE** - evidenced by the `# META` block of `nb_silver_customers`: `default_lakehouse_name` is `lkh_silver` and `known_lakehouses` also lists `lkh_bronze` |
+
+Category A no longer blocks deployment. **Execution remains unauthorised** for
+reasons unrelated to it: HV-07 covers preparation only.
 
 ### Category B - Decisions required to finalise part of the implementation
 
@@ -804,21 +894,55 @@ These block only the code sections they name. The remainder of
 | ID | Subject | Blocks | Does not block |
 |---|---|---|---|
 | S-04 | Cross-Lakehouse read method, to be confirmed by test before being coded | The source read cell only | Every transformation and Data Quality cell |
-| S-06 | Configuration mechanism supplying the expected Fabric identifiers for the target-Lakehouse identity guard - B-09 decision 5 | The implementation of the identity guard only | The transformation chain, the Data Quality controls and the write logic itself |
 
 **Resolved in this category.** S-05 - Silver technical columns, abort policy
 and target-Lakehouse guard - is **resolved in principle by B-09**. B-09
 settles *what* the notebook carries, *when* it refuses to write, and *how* it
-reacts to a Data Quality finding. It leaves the **supply of the expected
-identifiers** undetermined, which is now carried as S-06.
+reacts to a Data Quality finding.
+
+**S-06 is closed by R-04.** The answer is that **no configuration mechanism is
+introduced**. The expected identifier is resolved at run time from the
+governed name `lkh_silver` in the current workspace. No Variable Library, no
+notebook resource file, no parameter cell and no Environment item is created,
+so no additional `create_fabric_item` approval is opened.
+
+**Accepted security assumptions.** The guard is only as strong as these, and
+none of them is enforced by code:
+
+| # | Assumption | Basis | If violated |
+|---|---|---|---|
+| H1 | Lakehouse display names are unique within a workspace | Documented Fabric constraint | Resolution ambiguous - not expected to occur |
+| H2 | The Lakehouse named `lkh_silver` in the workspace **is** the Silver target approved by B-08 | Workspace governance, **not verifiable by the notebook** | The guard accepts the wrong Lakehouse |
+| H3 | No item is renamed to `lkh_silver` while being something else | Workspace governance | Same as H2 - **the accepted residual risk** |
+| H4 | The identity reported by the runtime context is the Lakehouse the write actually resolves to | **Not verified** - see test T4 | The guard is decorative |
+| H5 | Resolution without an explicit workspace argument targets the current workspace | Documented default scope | Cross-workspace resolution |
+| H6 | The executing identity may read the Lakehouse metadata | Documented permission requirement | Resolution fails - aborts, which is safe |
+
+**H2 and H3 are the price of this option and are accepted knowingly for the
+MVP.** They are replaced by an externally supplied identifier the day a
+Variable Library is introduced, which remains the documented target beyond the
+MVP.
+
+**Fabric tests still required before the guard is trusted.** None can be run
+without executing a notebook in Fabric, which is not authorised.
+
+| # | Test | Decides |
+|---|---|---|
+| T1 | Values returned by the runtime context with, and without, an attached Lakehouse | Handling of empty identities |
+| T2 | Behaviour of the Lakehouse resolution when the item is absent or permission is denied - exception or empty return | Shape of the error handling |
+| T3 | Context access notation - the documentation shows bracket access only | Correctness of the read |
+| T4 | **Coherence between the identity reported by the runtime context and the Lakehouse the relative-name write actually resolves to** | **Whether the guard protects anything at all** |
+| T5 | Effect of the secondary attached Lakehouse on the reported default identity | Interaction with the cross-Lakehouse read |
+
+**T4 is decisive.** Until it passes, R-04 describes an intent, not a proven
+protection.
 
 ### What is not blocked
 
 HV-07 remains in force: the **design and code authoring** of
-`nb_silver_customers` are authorised. Nothing in S-01 to S-04 or S-06
-suspends that authorisation. The following are fully determined by the Data
-Contract, the business rules and the Data Quality specification, and can be
-written now:
+`nb_silver_customers` are authorised. Nothing in S-04 suspends that
+authorisation. The following are fully determined by the Data Contract, the
+business rules and the Data Quality specification, and can be written now:
 
 - the transformation chain and its mandatory ordering - trim
   (BR-CUSTOMER-002) before survivorship (BR-CUSTOMER-001), per DQ-20;
@@ -841,17 +965,18 @@ Fabric, which HV-07 explicitly excluded.
 
 ### Status roll-up
 
-HV-01 to HV-07, R-01 to R-03 and B-01 to B-09 are resolved. No **business**
+HV-01 to HV-07, R-01 to R-04 and B-01 to B-09 are resolved. No **business**
 decision remains open for the Customers use case. HV-07 is resolved for
 batch `c5082b63-22b4-4c95-ad41-78c8cfb86507` only: the next Bronze run will
 raise a new DQ-16 validation.
 
 B-08 settles **where** the Silver table lives. B-09 settles **what it
-carries and when it refuses to write**. Neither authorises any Fabric item
-creation, any notebook configuration, any read method, or any execution.
+carries and when it refuses to write**. R-04 settles **how the target is
+identified**. None of them authorises any execution.
 
-Silver open points still outstanding: **S-01, S-02, S-03, S-04 and S-06**.
-S-05 is resolved in principle by B-09.
+**Silver open points: `S-04` only**, and it remains **untested**. S-01, S-02
+and S-03 are done, S-05 is resolved in principle by B-09, S-06 is closed by
+R-04.
 
 ### Deferred, non-blocking items carried forward
 
@@ -872,6 +997,7 @@ S-05 is resolved in principle by B-09.
 | `nb_bronze_customers` | Generate PySpark implementation | GENERATED - `generated/nb_bronze_customers.ipynb`, B-01 to B-06 applied, execution in Fabric not authorised |
 | `nb_bronze_customers` (Fabric item) | Align the Fabric-serialised payload with B-06 - it was imported from a pre-B-06 revision | CORRECTED on `dev` - `fabric/ws_fabric_ai_project_agent_dev/nb_bronze_customers.Notebook/notebook-content.py`, cell-for-cell parity verified. **Executed 2026-10-12**, batch `c5082b63-22b4-4c95-ad41-78c8cfb86507`: 508 rows written to `customers.bronze_customers`, 500 distinct keys, 12 PASS / 4 FAIL by design. The revision deployed to the workspace at run time is **not verified** from this repository |
 | `generated/nb_bronze_customers.ipynb` | Freeze as superseded design artifact | FROZEN - decision B-07, kept unchanged, no longer the deployment path |
-| `lkh_silver` (Fabric item) | Create a schema-enabled Lakehouse and the schema `customers` inside it | NOT CREATED - placement approved by B-08; creation is open point S-01 / S-02, `create_fabric_item` **not granted** |
-| `nb_silver_customers` | Generate PySpark implementation | PREPARATION AUTHORISED - decision HV-07, design and code authoring only. Target placement settled by B-08; technical columns, abort preconditions, Data Quality behaviour and identity guard settled by B-09. Notebook configuration, cross-Lakehouse read and identifier supply remain open points S-03 / S-04 / S-06. Execution in Fabric **not authorised** |
+| `lkh_silver` (Fabric item) | Create a schema-enabled Lakehouse and the schema `customers` inside it | **CREATED** - serialised on `dev` at commit `d07266f`, `defaultSchema: dbo`. The schema `customers` was **verified visually in the Fabric UI**; it is not visible in the serialised item (S-01 / S-02 done) |
+| `nb_silver_customers` (Fabric item) | Create the notebook and attach the Lakehouses | **CREATED** - serialised on `dev` at commit `d07266f`, **initial Fabric code only**. `lkh_silver` default, `lkh_bronze` secondary (S-03 done) |
+| `nb_silver_customers` | Generate PySpark implementation | PREPARATION AUTHORISED - decision HV-07, design and code authoring only. Target placement settled by B-08; technical columns, abort preconditions, Data Quality behaviour and identity guard settled by B-09; guard resolution mechanism settled by R-04. The cross-Lakehouse read method remains open point S-04, **untested**. Execution in Fabric **not authorised** |
 | `B-03` - `control_id` bound `DQ-01 ... DQ-25` | Decide whether to extend the bound to DQ-26 or make it unbounded | NOT CORRECTED - inconsistency flagged in B-09, amending an approved decision requires a separate human validation |
