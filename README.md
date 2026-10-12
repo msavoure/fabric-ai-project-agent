@@ -179,13 +179,13 @@ not a substitute for review.
 | Project standards | `standard_version: 0.2` |
 | Data contract — customers | `contract_version: 0.1`, frozen (decision HV-06) |
 | Business rules — customers | BR-CUSTOMER-001 to 008 |
-| Decision log — customers | HV-01…HV-06, R-01…R-03, B-01…B-06, B-07 — all resolved |
+| Decision log — customers | HV-01…HV-07, R-01…R-03, B-01…B-06, B-07 — all resolved (HV-07 scoped to batch `c5082b63-22b4-4c95-ad41-78c8cfb86507`) |
 | Data Quality specification | DQ-01…DQ-26 (DQ-17 withdrawn) |
-| `nb_bronze_customers` | Source of truth: `fabric/ws_fabric_ai_project_agent_dev/nb_bronze_customers.Notebook/notebook-content.py` — B-06 parity restored, execution in Fabric **not authorised** |
+| `nb_bronze_customers` | Source of truth: `fabric/ws_fabric_ai_project_agent_dev/nb_bronze_customers.Notebook/notebook-content.py` — B-06 parity restored; **executed 2026-10-12**, batch `c5082b63-…`, 508 rows written to `customers.bronze_customers` |
 | `generated/nb_bronze_customers.ipynb` | **Superseded** design artifact, frozen (decision B-07) |
-| `nb_silver_customers` | Not designed, not authorised |
+| `nb_silver_customers` | Not designed — preparation authorised (decision HV-07), execution **not authorised** |
 | Fabric Git integration | **Connected** — `ws_fabric_ai_project_agent_dev` ↔ `dev` ↔ `fabric/ws_fabric_ai_project_agent_dev/` |
-| Known follow-up | Existence of the `customers` schema in `lkh_bronze` not yet verified; *Update from Git* not yet run |
+| Known follow-up | The repository revision deployed to the workspace at run time is not verified from this repository; DQ-16 validation is batch-scoped and recurs at every run (HV-07); persistent Data Quality storage still deferred (B-03) |
 
 Bronze target table: `customers.bronze_customers` — schema-enabled Lakehouse
 `lkh_bronze`, workspace `ws_fabric_ai_project_agent_dev` (decision B-06).

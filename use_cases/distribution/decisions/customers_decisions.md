@@ -2,7 +2,7 @@
 
 **Use case:** Distribution / Customers
 **Scope:** MVP
-**Last updated:** 2026-10-09
+**Last updated:** 2026-10-12
 
 This file records the decisions taken by the human Data Engineer during
 the Customers analysis, and the residual open points.
@@ -30,6 +30,7 @@ Priority order defined in `agent/system_prompt.md` remains:
 | HV-04 | 2026-10-07 | Data Quality failures kept in Silver | `standards/project_standards.yaml` | RESOLVED - applied in `standard_version: "0.2"` |
 | HV-05 | 2026-10-07 | Full snapshot, full refresh, no historization | This file - see below | RESOLVED - MVP, Customers only |
 | HV-06 | 2026-10-07 | Data Contract frozen, gaps still reported | No change | ACCEPTED - deferred |
+| HV-07 | 2026-10-12 | DQ-16 batch validation - 5 `Rhone Alpes` records accepted as-is | This file - see below | APPROVED - batch `c5082b63-22b4-4c95-ad41-78c8cfb86507` only |
 | R-01 | 2026-10-07 | All `Rhone Alpes` occurrences require human validation | BR-CUSTOMER-004 | RESOLVED |
 | R-02 | 2026-10-07 | Two NULL values are identical for duplicate comparison | BR-CUSTOMER-001 | RESOLVED |
 | R-03 | 2026-10-07 | `source_semantics` scoped to Customers, not global | This file | RESOLVED - MVP |
@@ -49,6 +50,11 @@ Customers MVP unless explicitly promoted later.
 B-07 is the single exception: it is an **architecture decision** about where
 notebook code lives, not a Bronze implementation choice, and it applies to
 every notebook in the repository.
+
+HV-07 is the first **run-time** entry in this register. HV-01 to HV-06 are
+design-time decisions that create or clarify a rule; HV-07 creates none. It
+records the batch-level validation that DQ-16 mandates at every execution,
+and its authority expires with the batch it names.
 
 ---
 
@@ -210,6 +216,72 @@ block the MVP.
 | G-05 | `created_date` - no validity window | Not controlled |
 | G-06 | Routing of DQ-failing rows undefined | Resolved by HV-04 at standards level |
 | - | Trim scope excludes `customer_id` and `postal_code` | DQ-21 |
+
+---
+
+## HV-07 - DQ-16 batch validation - Bronze batch c5082b63
+
+**Date:** 2026-10-12
+**Type:** Run-time human validation mandated by DQ-16 - not a new rule
+**Scope:** Bronze batch `c5082b63-22b4-4c95-ad41-78c8cfb86507` only
+
+**Context.** `nb_bronze_customers` was executed and wrote to
+`customers.bronze_customers`. Reported results: 508 rows ingested, 500
+distinct `customer_id`, 8 duplicate keys preserved, 0 rows deleted. 16 of
+the 26 controls are evaluable at Bronze level; 12 passed and 4 failed by
+design: DQ-03 (BLOCKING, 16 rows), DQ-05 (MEDIUM, 18 rows), DQ-09 (MEDIUM,
+10 rows), DQ-16 (HIGH, 5 rows). Every count matches the profiling baseline
+recorded in `generated/customers_data_quality.md` exactly.
+
+The repository revision actually deployed to the Fabric workspace at the
+time of the run is **not verified** from this repository. The only
+confirmed fact is that the run targeted `customers.bronze_customers`, which
+is the table designated by B-06.
+
+DQ-16 requires a human validation **at each run** - see
+`generated/customers_data_quality.md`, section *Run-time human validation -
+standing, by design*.
+
+**Decision.** The human Data Engineer **approves** the batch on DQ-16. The
+5 records carrying `region = "Rhone Alpes"` are accepted **as-is**:
+
+| customer_id | city | postal_code | region (source, preserved) |
+|---|---|---|---|
+| C0053 | Vannes | 56000 | Rhone Alpes |
+| C0161 | Vannes | 56000 | Rhone Alpes |
+| C0189 | Bordeaux | 33000 | Rhone Alpes |
+| C0375 | Lille | 59000 | Rhone Alpes |
+| C0413 | Angers | 49000 | Rhone Alpes |
+
+**Explicitly not authorised by this validation.**
+
+- No automatic normalization of `Rhone Alpes` to `Auvergne-Rhône-Alpes`.
+- No manual correction of the 5 `region` values.
+- No geographic deduction from `city` or `postal_code`, and no introduction
+  of a geographic reference dataset.
+- No execution of any Silver notebook.
+
+**What this validation does authorise.** The **preparation** of the Silver
+layer only: specification and code authoring for `nb_silver_customers`.
+Execution in Fabric remains unauthorised and requires a separate human
+approval (STANDARD `human_approval_required`: `modify_fabric_item`,
+`deploy`).
+
+**Consequences.**
+
+- **No rule is created, altered or lifted.** BR-CUSTOMER-004, HV-02 and
+  R-01 remain in force unchanged. DQ-16 keeps severity HIGH and keeps
+  firing on every future batch.
+- **The validation does not carry forward.** A new `_batch_id` requires a
+  new validation. This entry authorises nothing beyond
+  `c5082b63-22b4-4c95-ad41-78c8cfb86507`.
+- **This entry is the only persistent trace of the validation.** B-03
+  limits Data Quality reporting to ephemeral notebook output. Until
+  persistent DQ storage is implemented, this register is the audit record.
+- Contract gap G-03 (`region` without a reference list) stays accepted and
+  deferred by HV-06. This validation does not close it.
+- DQ-26 did not fire on this batch (0 conflicting key), so no survivorship
+  validation was required.
 
 ---
 
@@ -417,9 +489,11 @@ documented in `README.md` section 6 and in `fabric/README.md`.
 |---|---|---|
 | - | None | - |
 
-HV-01 to HV-06, R-01 to R-03 and B-01 to B-07 are all resolved. No
-decision remains open for the Customers use case, and **no decision blocks
-the generation of `nb_bronze_customers`**.
+HV-01 to HV-07, R-01 to R-03 and B-01 to B-07 are all resolved. No
+decision remains open for the Customers use case. HV-07 is resolved for
+batch `c5082b63-22b4-4c95-ad41-78c8cfb86507` only: the next Bronze run will
+raise a new DQ-16 validation. **No decision blocks the preparation of
+`nb_silver_customers`**; its execution remains unauthorised.
 
 Deferred, non-blocking items carried forward:
 
@@ -438,6 +512,6 @@ Deferred, non-blocking items carried forward:
 |---|---|---|
 | `generated/customers_data_quality.md` | Regenerate - DQ-03, DQ-06, DQ-11, DQ-16, DQ-17, DQ-19, DQ-24 are impacted | REGENERATED |
 | `nb_bronze_customers` | Generate PySpark implementation | GENERATED - `generated/nb_bronze_customers.ipynb`, B-01 to B-06 applied, execution in Fabric not authorised |
-| `nb_bronze_customers` (Fabric item) | Align the Fabric-serialised payload with B-06 - it was imported from a pre-B-06 revision | CORRECTED on `dev` - `fabric/ws_fabric_ai_project_agent_dev/nb_bronze_customers.Notebook/notebook-content.py`, cell-for-cell parity verified, *Update from Git* not yet run, execution in Fabric not authorised |
+| `nb_bronze_customers` (Fabric item) | Align the Fabric-serialised payload with B-06 - it was imported from a pre-B-06 revision | CORRECTED on `dev` - `fabric/ws_fabric_ai_project_agent_dev/nb_bronze_customers.Notebook/notebook-content.py`, cell-for-cell parity verified. **Executed 2026-10-12**, batch `c5082b63-22b4-4c95-ad41-78c8cfb86507`: 508 rows written to `customers.bronze_customers`, 500 distinct keys, 12 PASS / 4 FAIL by design. The revision deployed to the workspace at run time is **not verified** from this repository |
 | `generated/nb_bronze_customers.ipynb` | Freeze as superseded design artifact | FROZEN - decision B-07, kept unchanged, no longer the deployment path |
-| `nb_silver_customers` | Generate PySpark implementation | NOT AUTHORISED YET - Silver implementation not yet designed |
+| `nb_silver_customers` | Generate PySpark implementation | PREPARATION AUTHORISED - decision HV-07, design and code authoring only; execution in Fabric **not authorised** |
