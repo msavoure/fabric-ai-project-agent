@@ -41,15 +41,18 @@ Priority order defined in `agent/system_prompt.md` remains:
 | B-05 | 2026-10-07 | `_ingestion_timestamp` in UTC, one value per batch | This file - see below | APPROVED |
 | B-06 | 2026-10-09 | Schema-enabled Lakehouse `lkh_bronze`, target schema `customers` -> `customers.bronze_customers` | This file - see below | APPROVED |
 | B-07 | 2026-10-09 | `fabric/.../notebook-content.py` becomes the single source of truth for executable notebook code; `generated/nb_bronze_customers.ipynb` is frozen as a superseded design artifact | This file - see below | APPROVED - architecture_change |
+| B-08 | 2026-10-12 | Dedicated schema-enabled Lakehouse `lkh_silver`, target schema `customers` -> `customers.silver_customers` | This file - see below | APPROVED - architecture_change, placement only |
 
 The `B-xx` series records **Bronze implementation decisions** for
 `nb_bronze_customers`. They are implementation-level choices: they do not
 create, alter or override any business rule, and they are scoped to the
 Customers MVP unless explicitly promoted later.
 
-B-07 is the single exception: it is an **architecture decision** about where
-notebook code lives, not a Bronze implementation choice, and it applies to
-every notebook in the repository.
+B-07 and B-08 are the exceptions. Both are **architecture decisions**
+approved under STANDARD `human_approval_required: architecture_change`.
+B-07 governs where notebook code lives and applies to every notebook in the
+repository. B-08 governs where the Silver table lives and is scoped to the
+Customers MVP. Neither is a Bronze implementation choice.
 
 HV-07 is the first **run-time** entry in this register. HV-01 to HV-06 are
 design-time decisions that create or clarify a rule; HV-07 creates none. It
@@ -483,19 +486,139 @@ documented in `README.md` section 6 and in `fabric/README.md`.
 
 ---
 
+## B-08 - Silver Lakehouse and target schema
+
+**Date:** 2026-10-12
+**Type:** Architecture decision - STANDARD `human_approval_required:
+architecture_change`
+**Scope:** `nb_silver_customers` -> `customers.silver_customers`, Customers MVP
+
+**Context.** B-06 deliberately refused to transpose the Bronze placement to
+Silver: *"`nb_silver_customers`, when it is designed, must state its own
+target schema. B-06 is scoped to the Bronze layer only."* B-08 supplies that
+statement, and nothing more.
+
+### What is approved
+
+The human Data Engineer approved the following **placement** decisions. They
+are settled and require no further validation.
+
+| # | Approved |
+|---|---|
+| 1 | A **dedicated Lakehouse `lkh_silver`**, schema-enabled, in workspace `ws_fabric_ai_project_agent_dev`, distinct from `lkh_bronze` |
+| 2 | Target **schema `customers`** inside `lkh_silver` |
+| 3 | Target **table `customers.silver_customers`** |
+| 4 | **No change** to the Bronze target: `customers.bronze_customers` in `lkh_bronze` remains governed solely by B-06 |
+| 5 | **No change** to any business rule, Data Contract clause or project standard |
+
+### What is explicitly NOT approved by B-08
+
+The items below were raised during the analysis of B-08. They are **technical
+proposals, not validated behaviour, and not authorisations**. B-08 does not
+settle any of them.
+
+| # | Open point | Why it is not settled |
+|---|---|---|
+| 1 | `nb_silver_customers` configured with `lkh_silver` as default Lakehouse and `lkh_bronze` as a secondary attached Lakehouse | **Proposal to verify.** Not tested in this workspace. |
+| 2 | Cross-Lakehouse read through a four-segment Spark SQL name `{workspace}.{lakehouse}.{schema}.{table}` | **Proposal to verify.** The format is documented for schema-enabled non-default Lakehouses, but it has **not been executed here**. |
+| 3 | Whether the source Lakehouse must be attached for a four-segment name to resolve | **Not documented.** Must be tested. |
+| 4 | The absolute ABFSS alternative | **The Microsoft documentation contradicts itself** on whether a schema segment belongs in the path for a schema-enabled Lakehouse. Must be tested before any use. An absolute path would also hardcode workspace and Lakehouse identifiers, which the principle stated by B-02 avoids. |
+| 5 | Whether `saveAsTable("customers.silver_customers")` creates the schema when it is absent | **Not documented.** Must be tested. The B-06 precedent is that a notebook does **not** create a schema. |
+| 6 | Creation of `lkh_silver` and of the schema `customers` inside it | Separate `create_fabric_item` approvals. **Not granted by B-08.** |
+| 7 | Any execution of `nb_silver_customers` in Fabric | **Not authorised.** HV-07 authorised Silver *preparation* only. |
+
+These open points are carried in the `S-xx` series below.
+
+**Consequences.**
+
+- The **table name is unchanged**: it remains `silver_customers`. The schema
+  is a physical placement qualifier, not a renaming. STANDARD
+  `naming.tables.silver: "silver_{entity}"` and CONTRACT
+  `target.silver_table: silver_customers` both remain satisfied. The Data
+  Contract is **not** modified and remains frozen by HV-06.
+- The Bronze placement is untouched. B-06 remains the sole authority for
+  `customers.bronze_customers`.
+- Unlike the Bronze case, `lkh_silver` and its schema `customers` **do not
+  pre-exist**. B-06 could rely on an existing schema; B-08 cannot. Their
+  creation is a separate human approval and the notebook must not perform it.
+- The default Lakehouse of `nb_silver_customers` would be the **target**, not
+  the source. This **inverts the convention** of `nb_bronze_customers` and is
+  the principal maintenance hazard of this design. A relative path or an
+  unqualified table name would silently resolve against the Silver Lakehouse.
+- The Silver write is an `overwrite` (HV-05). A misconfigured attachment
+  would therefore overwrite the wrong table. A runtime guard asserting the
+  identity of the default Lakehouse before writing is proposed, not decided.
+- Lakehouse attachment lives in the `# META` block of the notebook payload,
+  which is **Fabric-owned metadata**. Per B-07 it must be configured in the
+  Fabric UI and arrive through a Fabric commit. It must never be hand-edited
+  in `notebook-content.py`.
+- B-02 states that no absolute workspace or Lakehouse name is hardcoded,
+  the Lakehouse being attached to the notebook. B-02 is **scoped to Bronze**
+  and is not binding here, but B-08 records the intent to preserve that
+  principle in Silver rather than to depart from it.
+- No business rule, Data Quality control, transformation or ordering
+  constraint is altered. B-08 is a **placement decision only**.
+
+---
+
 ## Remaining unresolved decisions
 
-| ID | Subject | Blocking for |
-|---|---|---|
-| - | None | - |
+The `S-xx` series records **Silver open points** opened by B-08. None of them
+is approved, and none of them is a business decision. They fall into two
+distinct categories, and **neither category suspends the design and code
+authoring authorised by HV-07**.
 
-HV-01 to HV-07, R-01 to R-03 and B-01 to B-07 are all resolved. No
+### Category A - Fabric configuration and deployment prerequisites
+
+Environment prerequisites. They block **deployment and execution**. They do
+**not** block design, code authoring or review.
+
+| ID | Subject | Approval trigger | Blocking for |
+|---|---|---|---|
+| S-01 | Creation of Lakehouse `lkh_silver`, schema-enabled | `create_fabric_item` | Deployment and execution |
+| S-02 | Creation of schema `customers` inside `lkh_silver` | `create_fabric_item` | Deployment and execution |
+| S-03 | Attachment of `lkh_silver` as default and `lkh_bronze` as secondary Lakehouse - Fabric UI only, per B-07 | `modify_fabric_item` | Deployment and execution |
+
+### Category B - Decisions required to finalise part of the implementation
+
+These block only the code sections they name. The remainder of
+`nb_silver_customers` can be designed and authored now.
+
+| ID | Subject | Blocks | Does not block |
+|---|---|---|---|
+| S-04 | Cross-Lakehouse read method, to be confirmed by test before being coded | The source read cell only | Every transformation and Data Quality cell |
+| S-05 | Silver technical columns, Silver abort policy, and the default-Lakehouse guard before write | The technical-column projection, the abort policy and the write cell | The transformation chain and the Data Quality controls |
+
+### What is not blocked
+
+HV-07 remains in force: the **design and code authoring** of
+`nb_silver_customers` are authorised. Nothing in S-01 to S-05 suspends that
+authorisation. The following are fully determined by the Data Contract, the
+business rules and the Data Quality specification, and can be written now:
+
+- the transformation chain and its mandatory ordering - trim
+  (BR-CUSTOMER-002) before survivorship (BR-CUSTOMER-001), per DQ-20;
+- the `FR` -> `France` normalization (BR-CUSTOMER-003) and the
+  `created_date` cast (BR-CUSTOMER-007);
+- the active non-transformations - region preserved (BR-CUSTOMER-004,
+  HV-02, R-01), city casing preserved (BR-CUSTOMER-008, HV-03);
+- the Data Quality controls evaluated on the Silver layer.
+
+What remains unauthorised is the **execution** of `nb_silver_customers` in
+Fabric, which HV-07 explicitly excluded.
+
+### Status roll-up
+
+HV-01 to HV-07, R-01 to R-03 and B-01 to B-08 are resolved. No **business**
 decision remains open for the Customers use case. HV-07 is resolved for
 batch `c5082b63-22b4-4c95-ad41-78c8cfb86507` only: the next Bronze run will
-raise a new DQ-16 validation. **No decision blocks the preparation of
-`nb_silver_customers`**; its execution remains unauthorised.
+raise a new DQ-16 validation.
 
-Deferred, non-blocking items carried forward:
+B-08 settles **where** the Silver table lives. It does not authorise any
+Fabric item creation, any notebook configuration, any read method, or any
+execution.
+
+### Deferred, non-blocking items carried forward
 
 | Item | Deferred by | Revisit when |
 |---|---|---|
@@ -514,4 +637,5 @@ Deferred, non-blocking items carried forward:
 | `nb_bronze_customers` | Generate PySpark implementation | GENERATED - `generated/nb_bronze_customers.ipynb`, B-01 to B-06 applied, execution in Fabric not authorised |
 | `nb_bronze_customers` (Fabric item) | Align the Fabric-serialised payload with B-06 - it was imported from a pre-B-06 revision | CORRECTED on `dev` - `fabric/ws_fabric_ai_project_agent_dev/nb_bronze_customers.Notebook/notebook-content.py`, cell-for-cell parity verified. **Executed 2026-10-12**, batch `c5082b63-22b4-4c95-ad41-78c8cfb86507`: 508 rows written to `customers.bronze_customers`, 500 distinct keys, 12 PASS / 4 FAIL by design. The revision deployed to the workspace at run time is **not verified** from this repository |
 | `generated/nb_bronze_customers.ipynb` | Freeze as superseded design artifact | FROZEN - decision B-07, kept unchanged, no longer the deployment path |
-| `nb_silver_customers` | Generate PySpark implementation | PREPARATION AUTHORISED - decision HV-07, design and code authoring only; execution in Fabric **not authorised** |
+| `lkh_silver` (Fabric item) | Create a schema-enabled Lakehouse and the schema `customers` inside it | NOT CREATED - placement approved by B-08; creation is open point S-01 / S-02, `create_fabric_item` **not granted** |
+| `nb_silver_customers` | Generate PySpark implementation | PREPARATION AUTHORISED - decision HV-07, design and code authoring only. Target placement settled by B-08; notebook configuration and cross-Lakehouse read remain open points S-03 / S-04. Execution in Fabric **not authorised** |
